@@ -4,6 +4,7 @@ __pycache__/
 # Obsidian per-user state
 .obsidian/workspace.json
 .obsidian/workspace-mobile.json
+.obsidian/appearance.json
 .obsidian/cache
 .trash/
 
