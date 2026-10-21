@@ -1,0 +1,3 @@
+#!/bin/sh
+# Enforces veri-map history rules (append-only notebooks). Enabled by `scripts/vm init`.
+exec python3 "$(git rev-parse --show-toplevel)/scripts/vm" check --staged

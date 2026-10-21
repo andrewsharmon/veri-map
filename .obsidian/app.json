@@ -1,0 +1,10 @@
+{
+  "newLinkFormat": "relative",
+  "useMarkdownLinks": true,
+  "alwaysUpdateLinks": true,
+  "newFileLocation": "current",
+  "showUnsupportedFiles": false,
+  "userIgnoreFilters": [
+    "scripts/"
+  ]
+}

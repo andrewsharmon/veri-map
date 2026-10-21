@@ -1,0 +1,11 @@
+.DS_Store
+__pycache__/
+
+# Obsidian per-user state
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/cache
+.trash/
+
+# Large instrument output; commit run.md and summaries instead
+questions/**/runs/**/raw/

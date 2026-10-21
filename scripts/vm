@@ -1,0 +1,652 @@
+#!/usr/bin/env python3
+"""veri-map helper: questions, nodes, claims, notebooks and runs.
+
+Stdlib only (Python 3.9+). Every command works from anywhere inside the repo.
+Node arguments accept a repo-relative path (questions/q/sub), a path relative
+to the current directory, or a path relative to questions/ (q/sub).
+"""
+import argparse
+import datetime as dt
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+STATUSES = ("open", "active", "blocked", "concluded", "abandoned")
+CLOSED = ("concluded", "abandoned")
+NODE_FILES = ("DIRECTIVE.md", "NOTEBOOK.md", "FINDINGS.md")
+NON_NODE_DIRS = {"runs", "assets"}
+STALE_HOURS = 24
+SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+CLAIM_FMT = "%Y-%m-%dT%H:%M"
+
+ROOT = Path(".")
+QUESTIONS = Path("questions")
+NOW = dt.datetime.now()
+
+
+# ---------------------------------------------------------------- utilities
+
+def die(msg):
+    print(f"vm: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def git(*args, check=True):
+    r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+    if check and r.returncode != 0:
+        die(f"git {' '.join(args)} failed:\n{r.stderr.strip()}")
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def git_show(spec):
+    """File contents at a git revision spec (e.g. 'HEAD:path', ':path'), or None."""
+    r = subprocess.run(["git", "show", spec], cwd=ROOT, capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else None
+
+
+def rel(p):
+    return p.relative_to(ROOT).as_posix()
+
+
+def check_slug(slug):
+    if not SLUG_RE.match(slug):
+        die(f"bad slug {slug!r}: use lowercase letters, digits and dashes")
+
+
+def moment(fmt):
+    """Render an Obsidian/moment.js date format with the tokens the templates use."""
+    for a, b in (("YYYY", "%Y"), ("MM", "%m"), ("DD", "%d"), ("HH", "%H"), ("mm", "%M"), ("ss", "%S")):
+        fmt = fmt.replace(a, b)
+    return NOW.strftime(fmt)
+
+
+def render(template, **values):
+    text = (ROOT / "_meta" / "templates" / template).read_text()
+    text = re.sub(
+        r"\{\{(date|time)(?::([^}]+))?\}\}",
+        lambda m: moment(m.group(2) or ("YYYY-MM-DD" if m.group(1) == "date" else "HH:mm")),
+        text,
+    )
+    for k, v in values.items():
+        text = text.replace("{{%s}}" % k, v)
+    return text
+
+
+def commit(paths, message, enabled=True):
+    if not enabled:
+        return
+    paths = [rel(p) if isinstance(p, Path) else p for p in paths]
+    git("add", "--", *paths)
+    if git("diff", "--cached", "--quiet", "--", *paths, check=False) is not None:
+        return  # nothing staged for these paths
+    git("commit", "-q", "-m", message, "--", *paths)
+    print(f"committed: {message}")
+
+
+# ------------------------------------------------------- markdown structure
+
+def split_fm(text):
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end != -1:
+            return text[4:end], text[end + 5:]
+    return "", text
+
+
+def parse_fm(text):
+    fm, _ = split_fm(text)
+    out = {}
+    for line in fm.splitlines():
+        m = re.match(r"^([A-Za-z_][\w-]*):\s*(.*)$", line)
+        if m:
+            out[m.group(1)] = m.group(2).split(" #")[0].strip().strip("\"'")
+    return out
+
+
+def set_fm(path, **fields):
+    fm, body = split_fm(path.read_text())
+    lines = fm.splitlines()
+    for k, v in fields.items():
+        new = f"{k}: {v}".rstrip()
+        for i, line in enumerate(lines):
+            if re.match(rf"^{re.escape(k)}:", line):
+                lines[i] = new
+                break
+        else:
+            lines.append(new)
+    path.write_text("---\n" + "\n".join(lines) + "\n---\n" + body)
+
+
+def strip_comments(s):
+    return re.sub(r"<!--.*?-->", "", s, flags=re.S)
+
+
+def section_span(text, name):
+    m = re.search(rf"^## {re.escape(name)}[ \t]*$", text, re.M)
+    if not m:
+        return None
+    n = re.search(r"^## ", text[m.end():], re.M)
+    return m.end(), (m.end() + n.start() if n else len(text))
+
+
+def section(text, name):
+    span = section_span(text, name)
+    return text[span[0]:span[1]] if span else ""
+
+
+def clean(s):
+    return strip_comments(s).strip()
+
+
+def bullets(s):
+    return [l.strip() for l in strip_comments(s).splitlines()
+            if re.match(r"^\s*[-*] \S", l)]
+
+
+def question_of(text):
+    return " ".join(clean(section(text, "Question")).split())
+
+
+def append_to_section(text, name, line, table=False):
+    """Insert `line` at the end of section `name` (after the last table row if table)."""
+    span = section_span(text, name)
+    if not span:
+        return text.rstrip("\n") + f"\n\n## {name}\n\n{line}\n"
+    start, end = span
+    lines = text[start:end].rstrip("\n").split("\n")
+    rows = [i for i, l in enumerate(lines) if l.lstrip().startswith("|")]
+    if table and rows:
+        lines.insert(rows[-1] + 1, line)
+    else:
+        lines.append(line)
+    tail = "\n\n" if end < len(text) else "\n"
+    return text[:start] + "\n".join(lines) + tail + text[end:]
+
+
+def entries(notebook_text):
+    _, body = split_fm(notebook_text)
+    parts = re.split(r"^(?=## )", body, flags=re.M)
+    return [p.rstrip() for p in parts if p.startswith("## ")]
+
+
+# -------------------------------------------------------------------- nodes
+
+class Node:
+    def __init__(self, path):
+        self.path = path
+        self.directive = path / "DIRECTIVE.md"
+
+    @property
+    def rel(self):
+        return rel(self.path)
+
+    @property
+    def text(self):
+        return self.directive.read_text() if self.directive.exists() else ""
+
+    @property
+    def fm(self):
+        return parse_fm(self.text)
+
+    @property
+    def status(self):
+        return self.fm.get("status", "?")
+
+    @property
+    def question(self):
+        return question_of(self.text)
+
+    @property
+    def is_root(self):
+        return self.path.parent == QUESTIONS
+
+    @property
+    def parent(self):
+        return None if self.is_root else Node(self.path.parent)
+
+    def ancestors(self):
+        """Root-first list of ancestors, excluding self."""
+        chain, n = [], self.parent
+        while n:
+            chain.append(n)
+            n = n.parent
+        return list(reversed(chain))
+
+    def children(self):
+        return [Node(p) for p in sorted(self.path.iterdir()) if is_node_dir(p)]
+
+    def walk(self, depth=0):
+        yield self, depth
+        for c in self.children():
+            yield from c.walk(depth + 1)
+
+    def read(self, name):
+        p = self.path / name
+        return p.read_text() if p.exists() else ""
+
+    def claim_age_hours(self):
+        try:
+            since = dt.datetime.strptime(self.fm.get("claimed_at", ""), CLAIM_FMT)
+        except ValueError:
+            return None
+        return (NOW - since).total_seconds() / 3600
+
+    def is_stale(self):
+        age = self.claim_age_hours()
+        return self.status == "active" and age is not None and age > STALE_HOURS
+
+
+def is_node_dir(p):
+    return p.is_dir() and p.name not in NON_NODE_DIRS and not p.name.startswith((".", "_"))
+
+
+def question_roots():
+    if not QUESTIONS.exists():
+        return []
+    return [Node(p) for p in sorted(QUESTIONS.iterdir()) if is_node_dir(p)]
+
+
+def resolve_node(arg):
+    p = Path(arg)
+    cands = [p] if p.is_absolute() else [Path.cwd() / p, ROOT / p, QUESTIONS / p]
+    for c in cands:
+        c = c.resolve()
+        if QUESTIONS in c.parents and (c / "DIRECTIVE.md").exists():
+            return Node(c)
+    die(f"not a node: {arg} (expected a folder under questions/ with a DIRECTIVE.md)")
+
+
+def write_node(path, question):
+    path.mkdir(parents=True, exist_ok=True)
+    root = path.parent == QUESTIONS
+    up = "../" * (len(path.relative_to(ROOT).parts))
+    parent_link = f"[INDEX.md]({up}INDEX.md)" if root else "[../DIRECTIVE.md](../DIRECTIVE.md)"
+    for name in NODE_FILES:
+        (path / name).write_text(render(name, node=rel(path), question=question, parent_link=parent_link))
+
+
+def append_entry(node, agent, title, body=None):
+    nb = node.path / "NOTEBOOK.md"
+    text = nb.read_text() if nb.exists() else ""
+    entry = render("entry.md", agent=agent, entry=title)
+    if body is not None:
+        heading = entry.strip().splitlines()[0]
+        entry = f"\n{heading}\n\n{body.strip()}\n"
+    nb.write_text(text.rstrip("\n") + "\n" + entry)
+    return entry.strip().splitlines()[0]
+
+
+def status_tag(n):
+    s = n.status
+    if s == "active":
+        s += f" by {n.fm.get('claimed_by') or '?'}" + (" (stale)" if n.is_stale() else "")
+    return s
+
+
+def embed(markdown):
+    """Body of a node file for `context`: no frontmatter or comments, headings demoted one level."""
+    body = strip_comments(split_fm(markdown)[1]).strip()
+    body = re.sub(r"^(#+ )", r"#\1", body, flags=re.M)
+    return re.sub(r"\n{3,}", "\n\n", body)
+
+
+def short(s, width=90):
+    return s if len(s) <= width else s[: width - 1] + "…"
+
+
+# ----------------------------------------------------------------- commands
+
+def cmd_init(a):
+    git("config", "core.hooksPath", ".githooks")
+    QUESTIONS.mkdir(exist_ok=True)
+    print("git hooks enabled (core.hooksPath=.githooks)")
+
+
+def cmd_question(a):
+    check_slug(a.slug)
+    path = QUESTIONS / a.slug
+    if path.exists():
+        die(f"{rel(path)} already exists")
+    write_node(path, a.question)
+    print(f"created {rel(path)}/  — fill in Context, In scope, Restricted, Done when")
+    commit([path], f"[{rel(path)}] question: {a.question}", not a.no_commit)
+
+
+def cmd_path(a):
+    parent = resolve_node(a.parent)
+    check_slug(a.slug)
+    if a.slug in NON_NODE_DIRS:
+        die(f"{a.slug!r} is reserved for non-node folders")
+    path = parent.path / a.slug
+    if path.exists():
+        die(f"{rel(path)} already exists")
+    write_node(path, a.question)
+    scope = a.question.replace("|", "\\|")
+    parent.directive.write_text(append_to_section(
+        parent.text, "Sub-paths", f"| [{a.slug}]({a.slug}/DIRECTIVE.md) | {scope} |", table=True))
+    append_entry(parent, a.agent, f"Spawned sub-path `{a.slug}`",
+                 f"[{a.slug}/DIRECTIVE.md]({a.slug}/DIRECTIVE.md): {a.question}")
+    print(f"created {rel(path)}/ and listed it in {parent.rel}/DIRECTIVE.md")
+    print("next: fill in its In scope, Restricted (include sibling ground) and Done when")
+
+
+def cmd_context(a):
+    node = resolve_node(a.node)
+    anc = node.ancestors()
+    out = [f"# Context · {node.rel}", "", f"Generated {NOW.strftime('%Y-%m-%d %H:%M')}. Sections below are root-first.", ""]
+
+    out += ["# Path from question root", ""]
+    for i, n in enumerate(anc + [node]):
+        out.append(f"{'  ' * i}- `{n.rel}` [{status_tag(n)}] {n.question}")
+    out.append("")
+
+    out += ["# Effective restrictions (inherited + own — all binding)", ""]
+    any_r = False
+    for n in anc + [node]:
+        for b in bullets(section(n.text, "Restricted")):
+            out.append(f"{b}  ·from `{n.rel}`")
+            any_r = True
+    if not any_r:
+        out.append("(none)")
+    out.append("")
+
+    budgets = [(n, clean(section(n.text, "Budget"))) for n in anc + [node]]
+    budgets = [(n, b) for n, b in budgets if b]
+    if budgets:
+        out += ["# Budgets in force", ""]
+        for n, b in budgets:
+            out += [f"From `{n.rel}`:", b, ""]
+
+    if node.parent:
+        p = node.parent
+        out += [f"# Siblings (children of `{p.rel}`)", ""]
+        sibs = [c for c in p.children() if c.path != node.path]
+        for s in sibs:
+            out.append(f"- `{s.path.name}` [{status_tag(s)}] {s.question}")
+        if not sibs:
+            out.append("(none)")
+        closed = clean(section(p.text, "Closed paths"))
+        if closed:
+            out += ["", "Parent's closed paths:", closed]
+        out.append("")
+
+    out += [f"# This node's directive (status: {status_tag(node)})", "", embed(node.text), ""]
+    out += ["# This node's findings", "", embed(node.read("FINDINGS.md")) or "(empty)", ""]
+
+    ents = entries(node.read("NOTEBOOK.md"))
+    out += [f"# Recent notebook entries ({min(a.entries, len(ents))} of {len(ents)})", ""]
+    out += [embed(e) + "\n" for e in ents[-a.entries:]] if ents else ["(none)", ""]
+
+    kids = node.children()
+    if kids:
+        out += ["# Children", ""]
+        for c in kids:
+            out.append(f"- `{c.path.name}` [{status_tag(c)}] {c.question}")
+        out.append("")
+    print("\n".join(out).rstrip())
+
+
+def cmd_claim(a):
+    node = resolve_node(a.node)
+    fm = node.fm
+    holder = fm.get("claimed_by", "")
+    if not a.force:
+        if node.status == "active" and holder and holder != a.agent and not node.is_stale():
+            die(f"{node.rel} is claimed by {holder} since {fm.get('claimed_at')}; pick another node")
+        if node.status in CLOSED:
+            die(f"{node.rel} is {node.status}; use --force only if a directive reopens it")
+    set_fm(node.directive, status="active", claimed_by=a.agent,
+           claimed_at=NOW.strftime(CLAIM_FMT), updated=NOW.strftime("%Y-%m-%d"))
+    print(f"claimed {node.rel} for {a.agent}")
+    commit([node.directive], f"[{node.rel}] claim: {a.agent}", not a.no_commit)
+
+
+def cmd_release(a):
+    node = resolve_node(a.node)
+    holder = node.fm.get("claimed_by", "")
+    if holder and holder != a.agent and not a.force:
+        die(f"{node.rel} is claimed by {holder}, not {a.agent}")
+    set_fm(node.directive, status=a.status, claimed_by="", claimed_at="",
+           updated=NOW.strftime("%Y-%m-%d"))
+    paths = [node.directive]
+    if a.status in CLOSED and node.parent:
+        p = node.parent
+        slug = node.path.name
+        if f"`{slug}`" not in section(p.text, "Closed paths"):
+            p.directive.write_text(append_to_section(
+                p.text, "Closed paths",
+                f"- `{slug}` — {a.status}: {a.summary or 'TODO one-line result'}. "
+                f"[findings]({slug}/FINDINGS.md)"))
+            paths.append(p.directive)
+            if not a.summary:
+                print(f"note: write the one-line result in {p.rel}/DIRECTIVE.md › Closed paths")
+    print(f"released {node.rel} as {a.status}")
+    commit(paths, f"[{node.rel}] release: {a.status}", not a.no_commit)
+
+
+def cmd_log(a):
+    node = resolve_node(a.node)
+    heading = append_entry(node, a.agent, a.title)
+    print(f"appended to {node.rel}/NOTEBOOK.md:\n{heading}")
+
+
+def cmd_run(a):
+    node = resolve_node(a.node)
+    check_slug(a.slug)
+    run_id = f"{NOW.strftime('%Y%m%d-%H%M')}-{a.slug}"
+    path = node.path / "runs" / run_id
+    if path.exists():
+        die(f"{rel(path)} already exists")
+    (path / "raw").mkdir(parents=True)
+    sha = git("rev-parse", "--short", "HEAD", check=False) or "none"
+    if git("status", "--porcelain", check=False):
+        sha += "-dirty"
+    (path / "run.md").write_text(render(
+        "run.md", node=node.rel, run=run_id, agent=a.agent,
+        instrument=a.instrument or "", commit=sha))
+    print(rel(path / "run.md"))
+
+
+def cmd_tree(a):
+    roots = [resolve_node(a.node)] if a.node else question_roots()
+    if not roots:
+        print("no questions yet — start one with: scripts/vm question <slug> \"<question>\"")
+    for r in roots:
+        for n, d in r.walk():
+            name = n.rel if d == 0 else n.path.name
+            print(f"{'    ' * d}{name}  [{status_tag(n)}]  {short(n.question, 80)}")
+        print()
+
+
+def cmd_open(a):
+    roots = [resolve_node(a.node)] if a.node else question_roots()
+    found = False
+    for r in roots:
+        for n, _ in r.walk():
+            if n.status == "open" or n.is_stale():
+                leaf = "" if n.children() else " (leaf)"
+                print(f"{n.rel}  [{status_tag(n)}]{leaf}  {short(n.question, 80)}")
+                found = True
+    if not found:
+        print("no open nodes")
+
+
+def cmd_questions(a):
+    for r in question_roots():
+        nodes = [n for n, _ in r.walk()]
+        counts = {}
+        for n in nodes:
+            counts[n.status] = counts.get(n.status, 0) + 1
+        summary = ", ".join(f"{v} {k}" for k, v in sorted(counts.items()))
+        print(f"{r.path.name}  [{r.status}]  {len(nodes)} nodes ({summary})")
+        print(f"    {short(r.question, 100)}")
+
+
+def cmd_index(a):
+    lines = [
+        "# Index", "",
+        f"Generated by `scripts/vm index` on {NOW.strftime('%Y-%m-%d')}. Do not edit by hand.",
+        "Live tables: [_meta/dashboard.md](_meta/dashboard.md) (Dataview).", "",
+    ]
+    roots = question_roots()
+    if not roots:
+        lines.append("No questions yet.")
+    for r in roots:
+        lines += [f"## [{r.path.name}]({r.rel}/DIRECTIVE.md) · `{status_tag(r)}`", "", r.question, ""]
+        for n, d in r.walk():
+            if d == 0:
+                continue
+            lines.append(f"{'  ' * (d - 1)}- [{n.path.name}]({n.rel}/DIRECTIVE.md) · "
+                         f"`{status_tag(n)}` · {n.question} ([findings]({n.rel}/FINDINGS.md))")
+        lines.append("")
+    (ROOT / "INDEX.md").write_text("\n".join(lines).rstrip() + "\n")
+    print("wrote INDEX.md")
+
+
+def cmd_check(a):
+    errors, warnings = [], []
+    allow_rewrite = os.environ.get("VM_ALLOW_REWRITE") == "1"
+
+    for r in question_roots():
+        stack = [r.path]
+        while stack:
+            d = stack.pop()
+            n = Node(d)
+            if not n.directive.exists():
+                errors.append(f"{rel(d)}: folder has no DIRECTIVE.md (create nodes with "
+                              f"`vm path`, or prefix non-node folders with _)")
+                continue
+            stack += [p for p in d.iterdir() if is_node_dir(p)]
+            for f in NODE_FILES[1:]:
+                if not (d / f).exists():
+                    warnings.append(f"{n.rel}: missing {f}")
+            if n.status not in STATUSES:
+                errors.append(f"{n.rel}: status {n.status!r} is not one of {', '.join(STATUSES)}")
+            if n.status == "active" and not n.fm.get("claimed_by"):
+                warnings.append(f"{n.rel}: active but claimed_by is empty")
+            if n.is_stale():
+                warnings.append(f"{n.rel}: claim by {n.fm.get('claimed_by')} is stale "
+                                f"({n.claim_age_hours():.0f}h)")
+            if n.parent and f"{d.name}/DIRECTIVE.md" not in section(n.parent.text, "Sub-paths"):
+                warnings.append(f"{n.rel}: not listed in {n.parent.rel}/DIRECTIVE.md › Sub-paths")
+
+    # History rules, checked against HEAD for files that already exist there.
+    def current(path):
+        return git_show(f":{path}") if a.staged else (
+            (ROOT / path).read_text() if (ROOT / path).exists() else None)
+
+    tracked = git("ls-tree", "-r", "--name-only", "HEAD", "--", "questions", check=False) or ""
+    for path in tracked.splitlines():
+        name = path.rsplit("/", 1)[-1]
+        if name not in ("NOTEBOOK.md", "DIRECTIVE.md"):
+            continue
+        old, new = git_show(f"HEAD:{path}"), current(path)
+        if old is None:
+            continue
+        if new is None:
+            if name == "NOTEBOOK.md" and not allow_rewrite:
+                errors.append(f"{path}: notebook deleted (set VM_ALLOW_REWRITE=1 if intended)")
+            continue
+        if name == "NOTEBOOK.md":
+            if not split_fm(new)[1].rstrip().startswith(split_fm(old)[1].rstrip()) and not allow_rewrite:
+                errors.append(f"{path}: past entries were edited; notebooks are append-only "
+                              f"(add a correcting entry instead)")
+        else:
+            gone = set(bullets(section(old, "Restricted"))) - set(bullets(section(new, "Restricted")))
+            for b in sorted(gone):
+                warnings.append(f"{path}: restriction removed or reworded: {b}")
+            if question_of(old) != question_of(new):
+                warnings.append(f"{path}: Question changed (human decision only)")
+
+    for w in warnings:
+        print(f"warning: {w}")
+    for e in errors:
+        print(f"error: {e}")
+    if errors:
+        sys.exit(1)
+    if not a.staged or warnings:
+        print(f"check: {len(errors)} errors, {len(warnings)} warnings")
+
+
+# --------------------------------------------------------------------- main
+
+def main():
+    global ROOT, QUESTIONS
+    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if top.returncode != 0:
+        die("not inside a git repository")
+    ROOT = Path(top.stdout.strip()).resolve()
+    QUESTIONS = ROOT / "questions"
+
+    ap = argparse.ArgumentParser(prog="vm", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", metavar="command")
+    sub.required = True
+
+    def add(name, fn, help_):
+        p = sub.add_parser(name, help=help_, description=help_)
+        p.set_defaults(fn=fn)
+        return p
+
+    add("init", cmd_init, "enable git hooks for this clone")
+
+    p = add("question", cmd_question, "start a new question under questions/<slug>")
+    p.add_argument("slug")
+    p.add_argument("question")
+    p.add_argument("--no-commit", action="store_true")
+
+    p = add("path", cmd_path, "add a sub-path (child node) under a node")
+    p.add_argument("parent")
+    p.add_argument("slug")
+    p.add_argument("question", help="the child's question; also its scope line in the parent")
+    p.add_argument("--agent", default="vm", help="who is spawning it (for the parent's notebook)")
+
+    p = add("context", cmd_context, "print everything an agent must read before working a node")
+    p.add_argument("node")
+    p.add_argument("--entries", type=int, default=5, help="recent notebook entries to show")
+
+    p = add("claim", cmd_claim, "mark a node active for an agent (commits)")
+    p.add_argument("node")
+    p.add_argument("agent")
+    p.add_argument("--force", action="store_true", help="take over a live claim or reopen a closed node")
+    p.add_argument("--no-commit", action="store_true")
+
+    p = add("release", cmd_release, "release a claim and set the node's status (commits)")
+    p.add_argument("node")
+    p.add_argument("agent")
+    p.add_argument("--status", default="open", choices=[s for s in STATUSES if s != "active"])
+    p.add_argument("--summary", help="one-line result for the parent's Closed paths")
+    p.add_argument("--force", action="store_true")
+    p.add_argument("--no-commit", action="store_true")
+
+    p = add("log", cmd_log, "append a notebook entry skeleton")
+    p.add_argument("node")
+    p.add_argument("agent")
+    p.add_argument("title")
+
+    p = add("run", cmd_run, "create a run record: <node>/runs/<timestamp>-<slug>/run.md")
+    p.add_argument("node")
+    p.add_argument("slug")
+    p.add_argument("--agent", default="")
+    p.add_argument("--instrument", default="")
+
+    p = add("tree", cmd_tree, "show nodes with status and claims")
+    p.add_argument("node", nargs="?")
+
+    p = add("open", cmd_open, "list nodes free to claim (open or stale)")
+    p.add_argument("node", nargs="?")
+
+    add("questions", cmd_questions, "one line per question")
+    add("index", cmd_index, "regenerate INDEX.md (Obsidian landing page)")
+
+    p = add("check", cmd_check, "lint structure and history rules")
+    p.add_argument("--staged", action="store_true", help="check the index (used by the pre-commit hook)")
+
+    a = ap.parse_args()
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main()

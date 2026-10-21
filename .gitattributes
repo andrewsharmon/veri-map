@@ -1,0 +1,2 @@
+# Notebooks are append-only, so concurrent appends can be merged by keeping both sides.
+NOTEBOOK.md merge=union

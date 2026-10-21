@@ -1,0 +1,7 @@
+{
+  "items": [
+    { "type": "file", "ctime": 1760918400000, "path": "INDEX.md", "title": "Index" },
+    { "type": "file", "ctime": 1760918400000, "path": "_meta/dashboard.md", "title": "Dashboard" },
+    { "type": "file", "ctime": 1760918400000, "path": "CLAUDE.md", "title": "Agent protocol" }
+  ]
+}
