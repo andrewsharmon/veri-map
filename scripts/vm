@@ -173,7 +173,9 @@ def yaml_str(s):
 
 def slugify(name):
     s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-    return s[:48].rstrip("-") or "untitled"
+    if len(s) > 48:
+        s = s[:49].rsplit("-", 1)[0]  # cut at a word boundary
+    return s[:48] or "untitled"
 
 
 def append_to_section(text, name, line, table=False):
