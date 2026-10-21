@@ -159,11 +159,20 @@ Nothing under `lab/` should ever appear.
 
 ## Instruments
 
-Register external experimental tools under `lab/instruments/<name>/`, each
-with an `INSTRUMENT.md` (template in `_meta/templates/`) covering how to invoke
-it, its costs and its outputs. Each use is recorded in the node's
-`runs/<timestamp>-<slug>/run.md`; large raw output goes in that run's `raw/`
-folder, which git ignores.
+Register external experimental tools under `lab/instruments/<name>/`, one
+`INSTRUMENT.md` each (template in `_meta/templates/`). An entry is a
+lightweight pointer: its `source` property names the folder or repo that owns
+the driver, API and procedures (for example a separate hardware-tools repo),
+and the entry keeps only what research needs: what it gives the lab, how to
+start, and its guards and limits. Agents do deeper tool work in the source,
+under its rules.
+
+- `scripts/vm instruments` lists entries, flags sources missing on this
+  machine, and shows each source's git commit.
+- Each use is recorded in the node's `runs/<timestamp>-<slug>/run.md`, with the
+  source commit in `instrument_version`; large raw output goes in that run's
+  `raw/` folder, which git ignores.
+- **Research › Instruments** shows them all in Obsidian.
 
 ## CLI (agents, or you in a terminal)
 

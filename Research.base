@@ -1,6 +1,6 @@
 filters:
   and:
-    - file.inFolder("lab/questions")
+    - file.inFolder("lab")
 formulas:
   node: 'file.folder.replace("lab/questions/", "")'
   question_root: 'file.folder.split("/")[2]'
@@ -81,3 +81,15 @@ views:
       - agent
       - outcome
       - started
+  - type: table
+    name: Instruments
+    filters:
+      and:
+        - 'type == "instrument"'
+    order:
+      - name
+      - status
+      - outputs
+      - interface
+      - last_checked
+      - source

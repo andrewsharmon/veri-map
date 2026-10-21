@@ -65,6 +65,11 @@ edited since an agent last looked (its steering sections no longer match
 `NOTEBOOK.md`: `type: notebook`, `node`. Nothing that changes, so the file
 stays append-only.
 
+`INSTRUMENT.md`: `type: instrument`, `name`, `source` (folder or URL that owns
+the driver and procedures; `~` allowed), `driver`, `interface`, `activate`
+(environment command), `outputs` (what it can drive, or `none`), `status`,
+`last_checked`, `cost`.
+
 `run.md`: `type: run`, `node`, `run`, `agent`, `instrument`,
 `instrument_version`, `commit`, `started`, `outcome` (`ok` / `partial` /
 `failed`).

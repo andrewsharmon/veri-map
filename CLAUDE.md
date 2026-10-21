@@ -52,11 +52,19 @@ Tooling: `scripts/vm` (Python 3 stdlib, no install). Run `scripts/vm -h`.
 - **Stay inside your node.** You may write in your node and its descendants.
   Outside it you may only: append to the parent's `NOTEBOOK.md`, and add rows
   to the parent's *Sub-paths* / lines to its *Closed paths*.
+- **Instruments:** `scripts/vm instruments` lists what is registered. Each
+  `lab/instruments/<name>/INSTRUMENT.md` is a short pointer; its `source`
+  (e.g. an external tools repo) owns the driver, API and operating rules.
+  Before touching hardware, read the source's record and follow that repo's
+  agent instructions; do deeper work (commands, settings, verification) there
+  under its rules, not in the lab. Anything that drives an output (supply,
+  AFG, RF transmit, motion, high voltage) needs explicit human permission for
+  the specific setup, whatever the driver allows.
 - **Instrument runs:** `scripts/vm run <node> <slug> --agent <id> --instrument <name>`
-  creates `runs/<YYYYMMDD-HHMM>-<slug>/run.md`. Fill in the exact command,
-  instrument version and parameters. Put large raw output in that run's `raw/`
-  folder (git-ignored); commit summaries, not gigabytes. Check
-  `lab/instruments/<name>/INSTRUMENT.md` for costs and limits first.
+  creates `runs/<YYYYMMDD-HHMM>-<slug>/run.md` and records the source repo's
+  commit as `instrument_version`. Fill in the exact command and parameters.
+  Put large raw output in that run's `raw/` folder (git-ignored); commit
+  summaries, not gigabytes.
 - **Respect budgets.** If any directive in the chain sets a *Budget*, stop when
   you reach it and log that you did.
 - **Commit only your node:** `scripts/vm commit <node> "<verb>: <msg>"`

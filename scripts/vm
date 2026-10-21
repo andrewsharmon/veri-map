@@ -30,6 +30,7 @@ CLAIM_FMT = "%Y-%m-%dT%H:%M"
 ROOT = Path(__file__).resolve().parent.parent   # the public scaffold
 LAB = ROOT / "lab"                              # the private lab repo
 QUESTIONS = LAB / "questions"
+INSTRUMENTS = LAB / "instruments"
 NOW = dt.datetime.now()
 
 
@@ -511,6 +512,36 @@ def sync():
     return log, touched
 
 
+# ------------------------------------------------------------- instruments
+
+def instruments():
+    """[(slug, frontmatter)] for every lab/instruments/<slug>/INSTRUMENT.md."""
+    if not INSTRUMENTS.exists():
+        return []
+    return [(f.parent.name, parse_fm(f.read_text())) for f in sorted(INSTRUMENTS.glob("*/INSTRUMENT.md"))]
+
+
+def source_path(fm):
+    """Local folder an instrument entry points at, or None for URLs / no source."""
+    s = fm.get("source", "")
+    return Path(os.path.expanduser(s)) if s and not re.match(r"^[a-z]+://", s) else None
+
+
+def source_version(fm):
+    """'<repo>@<sha>[-dirty]' for a source inside a git repo, else ''."""
+    p = source_path(fm)
+    if not p or not p.exists():
+        return ""
+    sha = git("rev-parse", "--short", "HEAD", check=False, cwd=p)
+    if not sha:
+        return ""
+    top = git("rev-parse", "--show-toplevel", check=False, cwd=p)
+    if not git("ls-files", "--", ".", check=False, cwd=p):
+        return f"{Path(top).name}@{sha}+untracked"  # the source folder is not in that commit
+    dirty = git("status", "--porcelain", "--untracked-files=no", "--", ".", check=False, cwd=p)
+    return f"{Path(top).name}@{sha}" + ("-dirty" if dirty else "")
+
+
 def status_tag(n):
     s = n.status
     if s == "active":
@@ -655,6 +686,14 @@ def cmd_context(a):
     ents = entries(node.read("NOTEBOOK.md"))
     out += [f"# Recent notebook entries ({min(a.entries, len(ents))} of {len(ents)})", ""]
     out += [embed(e) + "\n" for e in ents[-a.entries:]] if ents else ["(none)", ""]
+
+    insts = instruments()
+    if insts:
+        out += ["# Instruments registered (lab/instruments; details: scripts/vm instruments)", ""]
+        for slug, fm in insts:
+            out.append(f"- `{slug}` — {fm.get('name') or slug} · {fm.get('status') or '?'} · "
+                       f"outputs: {fm.get('outputs') or '?'}")
+        out.append("")
 
     kids = node.children()
     if kids:
@@ -823,10 +862,32 @@ def cmd_run(a):
     scaffold = git("rev-parse", "--short", "HEAD", check=False, cwd=ROOT)
     if scaffold:
         sha += f" (scaffold {scaffold})"
+    version = ""
+    if a.instrument:
+        entry = dict(instruments()).get(a.instrument)
+        if entry is None:
+            print(f"warning: {a.instrument!r} is not registered in lab/instruments/", file=sys.stderr)
+        else:
+            version = source_version(entry)
     run_md = path / "run.md"
     run_md.write_text(render("run.md"))
-    set_fm(run_md, node=node.id, run=run_id, agent=a.agent, instrument=a.instrument, commit=sha)
+    set_fm(run_md, node=node.id, run=run_id, agent=a.agent, instrument=a.instrument,
+           instrument_version=version, commit=sha)
     print(rel(path / "run.md"))
+
+
+def cmd_instruments(a):
+    insts = instruments()
+    if not insts:
+        print("no instruments registered — add lab/instruments/<name>/INSTRUMENT.md "
+              "(template: _meta/templates/INSTRUMENT.md)")
+    for slug, fm in insts:
+        src = fm.get("source", "")
+        p = source_path(fm)
+        where = "" if not p else ("" if p.exists() else "  ⚠ source missing on this machine")
+        print(f"{slug}  [{fm.get('status') or '?'}]  outputs: {fm.get('outputs') or '?'}")
+        print(f"    {fm.get('name') or slug} · {fm.get('interface') or '?'}")
+        print(f"    source: {src or '(none)'}{where}  {source_version(fm)}")
 
 
 def cmd_tree(a):
@@ -1062,6 +1123,7 @@ def main():
     p.add_argument("node", nargs="?")
 
     add("questions", cmd_questions, "one line per question")
+    add("instruments", cmd_instruments, "list registered instruments, their sources and source versions")
     p = add("index", cmd_index, "regenerate lab/INDEX.md and commit it")
     p.add_argument("--no-commit", action="store_true")
 

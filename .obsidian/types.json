@@ -18,6 +18,14 @@
     "commit": "text",
     "started": "text",
     "outcome": "text",
-    "tags": "tags"
+    "tags": "tags",
+    "name": "text",
+    "source": "text",
+    "driver": "text",
+    "interface": "text",
+    "activate": "text",
+    "outputs": "text",
+    "last_checked": "text",
+    "cost": "text"
   }
 }
