@@ -22,6 +22,10 @@ Set in `DIRECTIVE.md` frontmatter.
 | `concluded` | Done criteria met; answer in `FINDINGS.md`. |
 | `abandoned` | Stopped without an answer; reason in `FINDINGS.md`. |
 
+Markers in `vm tree`, `vm next` and `INDEX.md`: **⚑** flagged, **✎** directive
+edited since an agent last looked (its steering sections no longer match
+`seen`).
+
 ## Frontmatter
 
 `DIRECTIVE.md`
@@ -33,6 +37,8 @@ Set in `DIRECTIVE.md` frontmatter.
 | `status` | See above |
 | `claimed_by` | Agent id, or empty |
 | `claimed_at` | `YYYY-MM-DDTHH:MM` local time, or empty |
+| `flag` | Human instruction for the next agent, or empty. Set by humans only; cleared by `vm release`. |
+| `seen` | Fingerprint of the steering sections when an agent last claimed or released. Set by `vm` only. |
 | `created`, `updated` | `YYYY-MM-DD` |
 
 `FINDINGS.md`: `type: findings`, `node`, `confidence` (`none` / `low` /

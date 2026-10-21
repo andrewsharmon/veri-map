@@ -4,6 +4,8 @@ node: {{node}}
 status: open
 claimed_by:
 claimed_at:
+flag:
+seen:
 created: {{date:YYYY-MM-DD}}
 updated: {{date:YYYY-MM-DD}}
 aliases: ["{{node}}"]

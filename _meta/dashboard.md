@@ -3,6 +3,15 @@
 Live tables. Requires the community **Dataview** plugin; without it, see
 [INDEX.md](../INDEX.md) or run `scripts/vm tree`.
 
+## Flagged (picked up first by `/go`)
+
+```dataview
+TABLE flag AS "Flag", status
+FROM "questions"
+WHERE type = "directive" AND flag
+SORT file.path ASC
+```
+
 ## Active claims
 
 ```dataview

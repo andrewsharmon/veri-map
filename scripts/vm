@@ -7,6 +7,7 @@ to the current directory, or a path relative to questions/ (q/sub).
 """
 import argparse
 import datetime as dt
+import hashlib
 import os
 import re
 import subprocess
@@ -101,7 +102,7 @@ def parse_fm(text):
     for line in fm.splitlines():
         m = re.match(r"^([A-Za-z_][\w-]*):\s*(.*)$", line)
         if m:
-            out[m.group(1)] = m.group(2).split(" #")[0].strip().strip("\"'")
+            out[m.group(1)] = m.group(2).strip().strip("\"'")
     return out
 
 
@@ -171,6 +172,26 @@ def entries(notebook_text):
     return [p.rstrip() for p in parts if p.startswith("## ")]
 
 
+def entry_field(entry, name):
+    m = re.search(rf"^\*\*{re.escape(name)}:\*\*[ \t]*(.*)$", entry, re.M)
+    return m.group(1).strip() if m else ""
+
+
+def digest(directive_text):
+    """Fingerprint of the parts of a directive that steer work.
+
+    Frontmatter, comments, whitespace, and the Sub-paths / Closed paths sections
+    (which agents maintain) are ignored, so the digest changes only when the
+    question, scope, restrictions, exit criteria or budget change.
+    """
+    _, body = split_fm(directive_text)
+    for name in ("Sub-paths", "Closed paths"):
+        span = section_span(body, name)
+        if span:
+            body = body[:span[0]] + body[span[1]:]
+    return hashlib.sha1(" ".join(strip_comments(body).split()).encode()).hexdigest()[:10]
+
+
 # -------------------------------------------------------------------- nodes
 
 class Node:
@@ -197,6 +218,20 @@ class Node:
     @property
     def question(self):
         return question_of(self.text)
+
+    @property
+    def flag(self):
+        return self.fm.get("flag", "")
+
+    @property
+    def changed(self):
+        """True if a human edited the directive since an agent last claimed or released it."""
+        seen = self.fm.get("seen", "")
+        return bool(seen) and seen != digest(self.text)
+
+    def held_by_other(self, agent=None):
+        holder = self.fm.get("claimed_by", "")
+        return self.status == "active" and holder != (agent or "") and not self.is_stale()
 
     @property
     def is_root(self):
@@ -282,6 +317,10 @@ def status_tag(n):
     s = n.status
     if s == "active":
         s += f" by {n.fm.get('claimed_by') or '?'}" + (" (stale)" if n.is_stale() else "")
+    if n.flag:
+        s += " ⚑"
+    if n.changed:
+        s += " ✎"
     return s
 
 
@@ -336,6 +375,15 @@ def cmd_context(a):
     node = resolve_node(a.node)
     anc = node.ancestors()
     out = [f"# Context · {node.rel}", "", f"Generated {NOW.strftime('%Y-%m-%d %H:%M')}. Sections below are root-first.", ""]
+
+    if node.flag or node.changed:
+        out += ["# From the human (act on this first)", ""]
+        if node.flag:
+            out.append(f"- Flag on this node: {node.flag}")
+        if node.changed:
+            out.append(f"- The directive changed since an agent last read it. See what changed with: "
+                       f"git diff -- {node.rel}/DIRECTIVE.md; git log -p -3 -- {node.rel}/DIRECTIVE.md")
+        out.append("")
 
     out += ["# Path from question root", ""]
     for i, n in enumerate(anc + [node]):
@@ -397,10 +445,20 @@ def cmd_claim(a):
             die(f"{node.rel} is claimed by {holder} since {fm.get('claimed_at')}; pick another node")
         if node.status in CLOSED:
             die(f"{node.rel} is {node.status}; use --force only if a directive reopens it")
-    set_fm(node.directive, status="active", claimed_by=a.agent,
-           claimed_at=NOW.strftime(CLAIM_FMT), updated=NOW.strftime("%Y-%m-%d"))
+    paths = [node.directive]
+    notes = []
+    if node.flag:
+        notes.append(f"Human flag: {node.flag}")
+    if node.changed:
+        notes.append(f"Directive changed since the last agent visit; review "
+                     f"`git log -p -- {node.rel}/DIRECTIVE.md`.")
+    if notes:
+        append_entry(node, a.agent, "Picked up human steering", "\n\n".join(notes))
+        paths.append(node.path / "NOTEBOOK.md")
+    set_fm(node.directive, status="active", claimed_by=a.agent, claimed_at=NOW.strftime(CLAIM_FMT),
+           seen=digest(node.text), updated=NOW.strftime("%Y-%m-%d"))
     print(f"claimed {node.rel} for {a.agent}")
-    commit([node.directive], f"[{node.rel}] claim: {a.agent}", not a.no_commit)
+    commit(paths, f"[{node.rel}] claim: {a.agent}", not a.no_commit)
 
 
 def cmd_release(a):
@@ -408,8 +466,11 @@ def cmd_release(a):
     holder = node.fm.get("claimed_by", "")
     if holder and holder != a.agent and not a.force:
         die(f"{node.rel} is claimed by {holder}, not {a.agent}")
-    set_fm(node.directive, status=a.status, claimed_by="", claimed_at="",
-           updated=NOW.strftime("%Y-%m-%d"))
+    fields = dict(status=a.status, claimed_by="", claimed_at="",
+                  seen=digest(node.text), updated=NOW.strftime("%Y-%m-%d"))
+    if not a.keep_flag:
+        fields["flag"] = ""
+    set_fm(node.directive, **fields)
     paths = [node.directive]
     if a.status in CLOSED and node.parent:
         p = node.parent
@@ -424,6 +485,73 @@ def cmd_release(a):
                 print(f"note: write the one-line result in {p.rel}/DIRECTIVE.md › Closed paths")
     print(f"released {node.rel} as {a.status}")
     commit(paths, f"[{node.rel}] release: {a.status}", not a.no_commit)
+
+
+def cmd_flag(a):
+    node = resolve_node(a.node)
+    text = "" if a.clear else " ".join(a.text).replace("\n", " ").replace('"', "'").strip()
+    if not a.clear and not text:
+        die("give flag text, or --clear")
+    set_fm(node.directive, flag=f'"{text}"' if text else "")
+    print(f"{'cleared flag on' if a.clear else 'flagged'} {node.rel}")
+
+
+def candidates(roots, agent=None):
+    """(score, node, reason) for every node worth working, plus nodes waiting on a human."""
+    picks, waiting = [], []
+    for r in roots:
+        for n, depth in r.walk():
+            if n.held_by_other(agent):
+                continue
+            kids = n.children()
+            ents = entries(n.read("NOTEBOOK.md"))
+            nxt = entry_field(ents[-1], "Next") if ents else ""
+            closed = n.status in CLOSED
+
+            if n.flag:
+                note = f" ({n.status}: claim with --force)" if closed else ""
+                picks.append((100, depth, n, f"flagged: {n.flag}{note}"))
+            elif n.changed and n.status == "blocked":
+                picks.append((90, depth, n, "blocked, and the directive has since been updated"))
+            elif n.changed and not closed:
+                picks.append((80, depth, n, "directive updated since the last agent visit"))
+            elif n.is_stale():
+                picks.append((60, depth, n, f"stale claim by {n.fm.get('claimed_by')}; resume"
+                              + (f" — next: {nxt}" if nxt else "")))
+            elif n.status == "blocked":
+                waiting.append(n)
+            elif n.status == "open":
+                open_kids = [k for k in kids if k.status not in CLOSED]
+                if kids and not open_kids:
+                    picks.append((55, depth, n, "all sub-paths closed; synthesise findings"))
+                elif open_kids:
+                    continue  # work happens in the children
+                elif nxt:
+                    picks.append((50, depth, n, f"in progress — next: {nxt}"))
+                elif ents and not n.is_root:
+                    picks.append((45, depth, n, "in progress"))
+                else:
+                    picks.append((40, depth, n, "plan sub-paths" if n.is_root else "not started"))
+    picks.sort(key=lambda t: (-t[0], -t[1], t[2].rel))
+    return [(s, n, why) for s, _, n, why in picks], waiting
+
+
+def cmd_next(a):
+    roots = [resolve_node(a.node)] if a.node else question_roots()
+    if not roots:
+        print("no questions yet — start one with: scripts/vm question <slug> \"<question>\"")
+        return
+    picks, waiting = candidates(roots, a.agent)
+    if picks:
+        print(f"PICK UP: {picks[0][1].rel}\n")
+        for i, (_, n, why) in enumerate(picks[: a.limit], 1):
+            print(f"{i}. {n.rel}  [{status_tag(n)}]\n   why: {short(why, 110)}\n   question: {short(n.question, 100)}")
+    else:
+        print("NOTHING TO PICK UP: every node is closed, claimed, or waiting on a human.")
+    if waiting:
+        print("\nWaiting on a human (blocked):")
+        for n in waiting:
+            print(f"- {n.rel}  {short(n.question, 90)}")
 
 
 def cmd_log(a):
@@ -493,6 +621,14 @@ def cmd_index(a):
     roots = question_roots()
     if not roots:
         lines.append("No questions yet.")
+    attention = [n for r in roots for n, _ in r.walk() if n.flag or n.changed or n.status == "blocked"]
+    if attention:
+        lines += ["## Needs attention", "",
+                  "⚑ flagged · ✎ directive edited since an agent last looked · blocked = waiting on you", ""]
+        for n in attention:
+            why = f"⚑ {n.flag}" if n.flag else ("✎ edited" if n.changed else "blocked")
+            lines.append(f"- [{n.rel}]({n.rel}/DIRECTIVE.md) · `{n.status}` · {why}")
+        lines.append("")
     for r in roots:
         lines += [f"## [{r.path.name}]({r.rel}/DIRECTIVE.md) · `{status_tag(r)}`", "", r.question, ""]
         for n, d in r.walk():
@@ -618,8 +754,19 @@ def main():
     p.add_argument("agent")
     p.add_argument("--status", default="open", choices=[s for s in STATUSES if s != "active"])
     p.add_argument("--summary", help="one-line result for the parent's Closed paths")
+    p.add_argument("--keep-flag", action="store_true", help="leave the human flag set (not yet addressed)")
     p.add_argument("--force", action="store_true")
     p.add_argument("--no-commit", action="store_true")
+
+    p = add("next", cmd_next, "rank where to pick up work: flags, directive edits, unfinished nodes")
+    p.add_argument("node", nargs="?", help="limit to a question or subtree")
+    p.add_argument("--agent", help="your id, so your own claims are not skipped")
+    p.add_argument("--limit", type=int, default=5)
+
+    p = add("flag", cmd_flag, "flag a node for agent attention (same as setting `flag:` in Obsidian)")
+    p.add_argument("node")
+    p.add_argument("text", nargs="*")
+    p.add_argument("--clear", action="store_true")
 
     p = add("log", cmd_log, "append a notebook entry skeleton")
     p.add_argument("node")

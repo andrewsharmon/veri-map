@@ -10,9 +10,9 @@ Tooling: `scripts/vm` (Python 3 stdlib, no install). Run `scripts/vm -h`.
 
 ## Scope
 
-- You are assigned a question, and usually a node within it. If you were only
-  given a question, run `scripts/vm open questions/<slug>` and pick a node, or
-  ask.
+- You are assigned a question, and usually a node within it. If you were not
+  given a node, run `scripts/vm next [questions/<slug>]` and take the
+  `PICK UP:` node (the `/go` skill does exactly this).
 - **Never touch another question's folder.** Questions are independent.
 - Outside `questions/`, change nothing (templates, scripts, this file,
   `.obsidian/`) unless a human asks you to.
@@ -28,7 +28,11 @@ Tooling: `scripts/vm` (Python 3 stdlib, no install). Run `scripts/vm -h`.
    wrong, say so in the notebook and stop that line of work; do not ignore it.
 3. If the node is `active` and claimed by someone else, pick another node.
    (`vm claim` refuses unless the claim is stale, over 24h old.)
-4. `scripts/vm claim <node> <your-id>`. It commits the claim.
+4. If `context` shows a **From the human** section, act on it first: the
+   `flag` is your instruction for this session, and a changed directive means
+   read its diff before anything else.
+5. `scripts/vm claim <node> <your-id>`. It logs any flag or directive change
+   in the notebook, stamps `seen`, and commits.
 
 ## While working
 
@@ -76,7 +80,8 @@ independently. Before creating one:
    findings' *From sub-paths*.
 3. `scripts/vm release <node> <your-id> --status <open|blocked|concluded|abandoned>`.
    For `concluded` / `abandoned` it also adds a line to the parent's
-   *Closed paths*; edit that line to state the result.
+   *Closed paths*; edit that line to state the result. Release clears the
+   human `flag`; pass `--keep-flag` if you did not address it.
 4. Commit.
 
 Leaving mid-task is fine: log where you stopped and what you would do next,
@@ -84,6 +89,8 @@ then release with `--status open`.
 
 ## What you must not do
 
+- Set a `flag` or edit the `seen` field by hand. Flags are how humans steer;
+  `seen` is maintained by `vm claim` / `vm release`.
 - Loosen, delete or reword a restriction, or change a directive's *Question*.
   Those are human decisions. Propose a change in the notebook with a
   `**Proposal:**` line, and release with `--status blocked` if you cannot

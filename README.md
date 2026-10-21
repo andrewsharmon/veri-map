@@ -10,6 +10,7 @@ the whole repo is one vault, so every question is visible at once.
 ```
 veri-map/
 ├── CLAUDE.md                 agent protocol (AGENTS.md points here)
+├── .claude/skills/go/        the /go command: find where to pick up, then work it
 ├── INDEX.md                  generated map of every question and node (scripts/vm index)
 ├── _meta/
 │   ├── conventions.md        field formats, statuses, naming
@@ -84,6 +85,10 @@ scripts/vm log     questions/cache-tuning/baseline agent-a "First sweep"
 scripts/vm run     questions/cache-tuning/baseline sweep --agent agent-a --instrument loadgen
 scripts/vm release questions/cache-tuning/baseline agent-a --status concluded
 
+# steer and pick up
+scripts/vm flag    questions/cache-tuning/baseline "Re-check with warm cache"
+scripts/vm next           # where an agent should pick up (what /go uses)
+
 # overview
 scripts/vm questions      # one line per question
 scripts/vm tree           # every node with status and claim
@@ -108,9 +113,31 @@ Open the repo folder as a vault. The committed `.obsidian/` config:
 `scripts/vm index`). If you install the community **Dataview** plugin,
 [_meta/dashboard.md](_meta/dashboard.md) gives live tables of claims and status.
 
-Steering is just editing: change a node's *In scope*, add a *Restricted* line,
-or set a *Budget* in Obsidian and commit. Agents pick it up on their next
-`vm context`.
+## Steering, then `/go`
+
+You steer from Obsidian. An agent picks up your changes when you type `/go`
+in Claude (desktop Code tab or CLI) with this repo open.
+
+- **Flag a node.** In the node's `DIRECTIVE.md`, fill in the `flag` property
+  (Obsidian's Properties panel) with what you want done, e.g.
+  `flag: re-run the sweep with the warm cache; the cold numbers look off`.
+  From a terminal: `scripts/vm flag <node> "…"`. A flag on a question root
+  can point at a sub-path.
+- **Or just edit a directive**: change *In scope*, add a *Restricted* line,
+  rewrite *Done when*, set a *Budget*, or answer a blocked node's
+  `**Proposal:**`. Each claim/release stamps a fingerprint (`seen`) of
+  those sections, so `vm` notices edits made since an agent last looked,
+  committed or not. Edits to *Sub-paths* / *Closed paths* don't count, since
+  agents maintain those.
+- **Then run `/go`** (optionally `/go cache-tuning` to stay in one question).
+  The [go skill](.claude/skills/go/SKILL.md) runs `scripts/vm next`, which
+  ranks flagged nodes first, then blocked nodes whose directive changed, then
+  edited directives, stale claims, parents ready to synthesise, and ordinary
+  open work. The agent claims the top node, works it, releases it (which
+  clears the flag), and reports back.
+
+`INDEX.md` opens with a *Needs attention* list (⚑ flagged, ✎ edited,
+blocked), and `scripts/vm tree` shows the same markers.
 
 ## Instruments
 
