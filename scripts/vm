@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """veri-map helper: questions, nodes, claims, notebooks and runs.
 
-Stdlib only (Python 3.9+). Every command works from anywhere inside the repo.
-Node arguments accept a repo-relative path (questions/q/sub), a path relative
-to the current directory, or a path relative to questions/ (q/sub).
+Stdlib only (Python 3.9+). The scaffold (this repo) is public; all research
+lives in lab/, a separate private git repo that the scaffold ignores. Every
+commit vm makes goes to the lab repo.
+
+Nodes are named by their path under lab/questions/ (e.g. cache-tuning/baseline);
+a full path (lab/questions/cache-tuning/baseline) or a path relative to the
+current directory also works.
 """
+import shutil
 import argparse
 import datetime as dt
 import hashlib
@@ -22,8 +27,9 @@ STALE_HOURS = 24
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 CLAIM_FMT = "%Y-%m-%dT%H:%M"
 
-ROOT = Path(".")
-QUESTIONS = Path("questions")
+ROOT = Path(__file__).resolve().parent.parent   # the public scaffold
+LAB = ROOT / "lab"                              # the private lab repo
+QUESTIONS = LAB / "questions"
 NOW = dt.datetime.now()
 
 
@@ -34,8 +40,9 @@ def die(msg):
     sys.exit(1)
 
 
-def git(*args, check=True):
-    r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+def git(*args, check=True, cwd=None):
+    """Run git in the lab repo (or `cwd`)."""
+    r = subprocess.run(["git", *args], cwd=cwd or LAB, capture_output=True, text=True)
     if check and r.returncode != 0:
         die(f"git {' '.join(args)} failed:\n{r.stderr.strip()}")
     return r.stdout.strip() if r.returncode == 0 else None
@@ -43,12 +50,18 @@ def git(*args, check=True):
 
 def git_show(spec):
     """File contents at a git revision spec (e.g. 'HEAD:path', ':path'), or None."""
-    r = subprocess.run(["git", "show", spec], cwd=ROOT, capture_output=True, text=True)
+    r = subprocess.run(["git", "show", spec], cwd=LAB, capture_output=True, text=True)
     return r.stdout if r.returncode == 0 else None
 
 
 def rel(p):
+    """Path for display, relative to the scaffold root."""
     return p.relative_to(ROOT).as_posix()
+
+
+def gitpath(p):
+    """Path inside the lab repo."""
+    return p.relative_to(LAB).as_posix()
 
 
 def check_slug(slug):
@@ -78,8 +91,10 @@ def render(template, **values):
 def commit(paths, message, enabled=True):
     if not enabled:
         return
-    paths = [rel(p) if isinstance(p, Path) else p for p in paths]
-    git("add", "--", *paths)
+    if not paths:
+        return
+    paths = sorted({gitpath(p) if isinstance(p, Path) else p for p in paths})
+    git("add", "-A", "--", *paths)
     if git("diff", "--cached", "--quiet", "--", *paths, check=False) is not None:
         return  # nothing staged for these paths
     git("commit", "-q", "-m", message, "--", *paths)
@@ -222,6 +237,11 @@ class Node:
         return rel(self.path)
 
     @property
+    def id(self):
+        """Node name: its path under lab/questions/."""
+        return self.path.relative_to(QUESTIONS).as_posix()
+
+    @property
     def text(self):
         return self.directive.read_text() if self.directive.exists() else ""
 
@@ -312,12 +332,12 @@ def question_roots():
 
 def resolve_node(arg):
     p = Path(arg)
-    cands = [p] if p.is_absolute() else [Path.cwd() / p, ROOT / p, QUESTIONS / p]
+    cands = [p] if p.is_absolute() else [QUESTIONS / p, Path.cwd() / p, ROOT / p, LAB / p]
     for c in cands:
         c = c.resolve()
         if QUESTIONS in c.parents and (c / "DIRECTIVE.md").exists():
             return Node(c)
-    die(f"not a node: {arg} (expected a folder under questions/ with a DIRECTIVE.md)")
+    die(f"not a node: {arg} (expected a folder under lab/questions/ with a DIRECTIVE.md)")
 
 
 PARENT_LINK = "Parent: [../DIRECTIVE.md](../DIRECTIVE.md)"
@@ -332,7 +352,7 @@ def write_node(path, question=None, sections=None):
     Returns True if anything changed.
     """
     path.mkdir(parents=True, exist_ok=True)
-    node, changed = rel(path), False
+    node, changed = path.relative_to(QUESTIONS).as_posix(), False
     for name in NODE_FILES:
         f = path / name
         new = not f.exists()
@@ -373,7 +393,7 @@ def append_entry(node, agent, title, body=None):
 # ------------------------------------------------- adopting human-made nodes
 
 def is_tracked(path):
-    return git("ls-files", "--error-unmatch", "--", rel(path), check=False) is not None
+    return git("ls-files", "--error-unmatch", "--", gitpath(path), check=False) is not None
 
 
 def parse_note(path):
@@ -404,7 +424,7 @@ def parse_note(path):
 
 def loose_notes(d):
     """Markdown files in a folder that are requests for new nodes."""
-    skip = set(NODE_FILES) | {"README.md", "INDEX.md"}
+    skip = set(NODE_FILES) | {"README.md"}
     return [f for f in sorted(d.glob("*.md"))
             if f.name not in skip and not f.name.startswith(("_", ".", "Untitled"))]
 
@@ -516,9 +536,33 @@ def short(s, width=90):
 # ----------------------------------------------------------------- commands
 
 def cmd_init(a):
-    git("config", "core.hooksPath", ".githooks")
-    QUESTIONS.mkdir(exist_ok=True)
-    print("git hooks enabled (core.hooksPath=.githooks)")
+    if (ROOT / ".git").exists():
+        git("config", "core.hooksPath", ".githooks", cwd=ROOT)
+        print("scaffold: hooks enabled (refuses commits that include lab/)")
+    if not LAB.exists():
+        shutil.copytree(ROOT / "_meta" / "lab-skeleton", LAB)
+        print("created lab/ from _meta/lab-skeleton")
+    if not (LAB / ".git").exists():
+        git("init", "-q", "-b", "main")
+        git("config", "core.hooksPath", "../.githooks")
+        git("add", "-A")
+        git("commit", "-q", "-m", "Start lab")
+        print("lab: new private git repo")
+    git("config", "core.hooksPath", "../.githooks")
+    print("lab: hooks enabled (append-only notebooks)")
+    if a.remote:
+        if git("remote", "get-url", "origin", check=False):
+            git("remote", "set-url", "origin", a.remote)
+        else:
+            git("remote", "add", "origin", a.remote)
+        print(f"lab: origin = {a.remote}  (push with: git -C lab push -u origin main)")
+    elif not git("remote", check=False):
+        print("lab: no remote yet — add a PRIVATE one with: scripts/vm init --remote <url>")
+
+
+def cmd_commit(a):
+    node = resolve_node(a.node)
+    commit([node.path], f"[{node.id}] {a.message}")
 
 
 def cmd_question(a):
@@ -528,7 +572,7 @@ def cmd_question(a):
         die(f"{rel(path)} already exists")
     write_node(path, a.question)
     print(f"created {rel(path)}/  — fill in Context, In scope, Restricted, Done when")
-    commit([path], f"[{rel(path)}] question: {a.question}", not a.no_commit)
+    commit([path], f"[{a.slug}] question: {a.question}", not a.no_commit)
 
 
 def cmd_path(a):
@@ -545,14 +589,15 @@ def cmd_path(a):
         parent.text, "Sub-paths", f"| [{a.slug}]({a.slug}/DIRECTIVE.md) | {scope} |", table=True))
     append_entry(parent, a.agent, f"Spawned sub-path `{a.slug}`",
                  f"[{a.slug}/DIRECTIVE.md]({a.slug}/DIRECTIVE.md): {a.question}")
-    print(f"created {rel(path)}/ and listed it in {parent.rel}/DIRECTIVE.md")
+    print(f"created {rel(path)}/ and listed it in {parent.id}/DIRECTIVE.md")
     print("next: fill in its In scope, Restricted (include sibling ground) and Done when")
 
 
 def cmd_context(a):
     node = resolve_node(a.node)
     anc = node.ancestors()
-    out = [f"# Context · {node.rel}", "", f"Generated {NOW.strftime('%Y-%m-%d %H:%M')}. Sections below are root-first.", ""]
+    out = [f"# Context · {node.id}", "",
+           f"Files: {node.rel}/  ·  generated {NOW.strftime('%Y-%m-%d %H:%M')}  ·  sections are root-first.", ""]
 
     if node.flag or node.changed or node.human_note:
         out += ["# From the human (act on this first)", ""]
@@ -562,19 +607,20 @@ def cmd_context(a):
             out.append(f"- The last notebook entry is a note from the human: \"{node.human_note}\" (shown below)")
         if node.changed:
             out.append(f"- The directive changed since an agent last read it. See what changed with: "
-                       f"git diff -- {node.rel}/DIRECTIVE.md; git log -p -3 -- {node.rel}/DIRECTIVE.md")
+                       f"git -C lab diff -- {gitpath(node.directive)}; "
+                       f"git -C lab log -p -3 -- {gitpath(node.directive)}")
         out.append("")
 
     out += ["# Path from question root", ""]
     for i, n in enumerate(anc + [node]):
-        out.append(f"{'  ' * i}- `{n.rel}` [{status_tag(n)}] {n.question}")
+        out.append(f"{'  ' * i}- `{n.id}` [{status_tag(n)}] {n.question}")
     out.append("")
 
     out += ["# Effective restrictions (inherited + own — all binding)", ""]
     any_r = False
     for n in anc + [node]:
         for b in bullets(section(n.text, "Restricted")):
-            out.append(f"{b}  ·from `{n.rel}`")
+            out.append(f"{b}  ·from `{n.id}`")
             any_r = True
     if not any_r:
         out.append("(none)")
@@ -585,11 +631,11 @@ def cmd_context(a):
     if budgets:
         out += ["# Budgets in force", ""]
         for n, b in budgets:
-            out += [f"From `{n.rel}`:", b, ""]
+            out += [f"From `{n.id}`:", b, ""]
 
     if node.parent:
         p = node.parent
-        out += [f"# Siblings (children of `{p.rel}`)", ""]
+        out += [f"# Siblings (children of `{p.id}`)", ""]
         sibs = [c for c in p.children() if c.path != node.path]
         for s in sibs:
             out.append(f"- `{s.path.name}` [{status_tag(s)}] {s.question}")
@@ -623,16 +669,16 @@ def cmd_claim(a):
     holder = fm.get("claimed_by", "")
     if not a.force:
         if node.status == "active" and holder and holder != a.agent and not node.is_stale():
-            die(f"{node.rel} is claimed by {holder} since {fm.get('claimed_at')}; pick another node")
+            die(f"{node.id} is claimed by {holder} since {fm.get('claimed_at')}; pick another node")
         if node.status in CLOSED:
-            die(f"{node.rel} is {node.status}; use --force only if a directive reopens it")
+            die(f"{node.id} is {node.status}; use --force only if a directive reopens it")
     paths = [node.directive]
     notes = []
     if node.flag:
         notes.append(f"Human flag: {node.flag}")
     if node.changed:
         notes.append(f"Directive changed since the last agent visit; review "
-                     f"`git log -p -- {node.rel}/DIRECTIVE.md`.")
+                     f"`git -C lab log -p -- {gitpath(node.directive)}`.")
     if node.human_note:
         notes.append(f"Human note in this notebook: \"{node.human_note}\" (previous entry).")
     if notes:
@@ -640,15 +686,15 @@ def cmd_claim(a):
         paths.append(node.path / "NOTEBOOK.md")
     set_fm(node.directive, status="active", claimed_by=a.agent, claimed_at=NOW.strftime(CLAIM_FMT),
            seen=digest(node.text), updated=NOW.strftime("%Y-%m-%d"))
-    print(f"claimed {node.rel} for {a.agent}")
-    commit(paths, f"[{node.rel}] claim: {a.agent}", not a.no_commit)
+    print(f"claimed {node.id} for {a.agent}")
+    commit(paths, f"[{node.id}] claim: {a.agent}", not a.no_commit)
 
 
 def cmd_release(a):
     node = resolve_node(a.node)
     holder = node.fm.get("claimed_by", "")
     if holder and holder != a.agent and not a.force:
-        die(f"{node.rel} is claimed by {holder}, not {a.agent}")
+        die(f"{node.id} is claimed by {holder}, not {a.agent}")
     fields = dict(status=a.status, claimed_by="", claimed_at="",
                   seen=digest(node.text), updated=NOW.strftime("%Y-%m-%d"))
     if not a.keep_flag:
@@ -665,9 +711,9 @@ def cmd_release(a):
                 f"[findings]({slug}/FINDINGS.md)"))
             paths.append(p.directive)
             if not a.summary:
-                print(f"note: write the one-line result in {p.rel}/DIRECTIVE.md › Closed paths")
-    print(f"released {node.rel} as {a.status}")
-    commit(paths, f"[{node.rel}] release: {a.status}", not a.no_commit)
+                print(f"note: write the one-line result in {p.id}/DIRECTIVE.md › Closed paths")
+    print(f"released {node.id} as {a.status}")
+    commit(paths, f"[{node.id}] release: {a.status}", not a.no_commit)
 
 
 def cmd_flag(a):
@@ -676,7 +722,7 @@ def cmd_flag(a):
     if not a.clear and not text:
         die("give flag text, or --clear")
     set_fm(node.directive, flag=f'"{text}"' if text else "")
-    print(f"{'cleared flag on' if a.clear else 'flagged'} {node.rel}")
+    print(f"{'cleared flag on' if a.clear else 'flagged'} {node.id}")
 
 
 def candidates(roots, agent=None):
@@ -720,7 +766,7 @@ def candidates(roots, agent=None):
                     picks.append((45, depth, n, "in progress"))
                 else:
                     picks.append((40, depth, n, "plan sub-paths" if n.is_root else "not started"))
-    picks.sort(key=lambda t: (-t[0], -t[1], t[2].rel))
+    picks.sort(key=lambda t: (-t[0], -t[1], t[2].id))
     return [(s, n, why) for s, _, n, why in picks], waiting
 
 
@@ -728,7 +774,7 @@ def cmd_sync(a):
     log, touched = sync()
     print("\n".join(log) if log else "nothing to sync")
     if log:
-        commit(touched, "[questions] sync: adopt nodes created in Obsidian", not a.no_commit)
+        commit(touched, "[sync] adopt nodes created in Obsidian", not a.no_commit)
 
 
 def cmd_next(a):
@@ -736,29 +782,29 @@ def cmd_next(a):
         log, touched = sync()
         if log:
             print("synced from Obsidian:\n" + "\n".join(f"  {l}" for l in log) + "\n")
-            commit(touched, "[questions] sync: adopt nodes created in Obsidian", not a.no_commit)
+            commit(touched, "[sync] adopt nodes created in Obsidian", not a.no_commit)
             print()
     roots = [resolve_node(a.node)] if a.node else question_roots()
     if not roots:
-        print("no questions yet — in Obsidian, add a note to questions/ (see README)")
+        print("no questions yet — in Obsidian, add a note to lab/questions/ (see README)")
         return
     picks, waiting = candidates(roots, a.agent)
     if picks:
-        print(f"PICK UP: {picks[0][1].rel}\n")
+        print(f"PICK UP: {picks[0][1].id}\n")
         for i, (_, n, why) in enumerate(picks[: a.limit], 1):
-            print(f"{i}. {n.rel}  [{status_tag(n)}]\n   why: {short(why, 110)}\n   question: {short(n.question, 100)}")
+            print(f"{i}. {n.id}  [{status_tag(n)}]\n   why: {short(why, 110)}\n   question: {short(n.question, 100)}")
     else:
         print("NOTHING TO PICK UP: every node is closed, claimed, or waiting on a human.")
     if waiting:
         print("\nWaiting on a human:")
         for n, why in waiting:
-            print(f"- {n.rel}  [{why}]  {short(n.question, 80)}")
+            print(f"- {n.id}  [{why}]  {short(n.question, 80)}")
 
 
 def cmd_log(a):
     node = resolve_node(a.node)
     heading = append_entry(node, a.agent, a.title)
-    print(f"appended to {node.rel}/NOTEBOOK.md:\n{heading}")
+    print(f"appended to {node.id}/NOTEBOOK.md:\n{heading}")
 
 
 def cmd_run(a):
@@ -772,9 +818,12 @@ def cmd_run(a):
     sha = git("rev-parse", "--short", "HEAD", check=False) or "none"
     if git("status", "--porcelain", check=False):
         sha += "-dirty"
+    scaffold = git("rev-parse", "--short", "HEAD", check=False, cwd=ROOT)
+    if scaffold:
+        sha += f" (scaffold {scaffold})"
     run_md = path / "run.md"
     run_md.write_text(render("run.md"))
-    set_fm(run_md, node=node.rel, run=run_id, agent=a.agent, instrument=a.instrument, commit=sha)
+    set_fm(run_md, node=node.id, run=run_id, agent=a.agent, instrument=a.instrument, commit=sha)
     print(rel(path / "run.md"))
 
 
@@ -784,7 +833,7 @@ def cmd_tree(a):
         print("no questions yet — start one with: scripts/vm question <slug> \"<question>\"")
     for r in roots:
         for n, d in r.walk():
-            name = n.rel if d == 0 else n.path.name
+            name = n.id if d == 0 else n.path.name
             print(f"{'    ' * d}{name}  [{status_tag(n)}]  {short(n.question, 80)}")
         print()
 
@@ -796,7 +845,7 @@ def cmd_open(a):
         for n, _ in r.walk():
             if n.status == "open" or n.is_stale():
                 leaf = "" if n.children() else " (leaf)"
-                print(f"{n.rel}  [{status_tag(n)}]{leaf}  {short(n.question, 80)}")
+                print(f"{n.id}  [{status_tag(n)}]{leaf}  {short(n.question, 80)}")
                 found = True
     if not found:
         print("no open nodes")
@@ -817,8 +866,12 @@ def cmd_index(a):
     lines = [
         "# Index", "",
         f"Generated by `scripts/vm index` on {NOW.strftime('%Y-%m-%d')}. Do not edit by hand.",
-        "Live, editable tables: [Research.base](Research.base).", "",
+        "Live, editable tables: [Research.base](../Research.base).", "",
     ]
+
+    def link(n, name="DIRECTIVE.md"):
+        return f"{gitpath(n.path)}/{name}"
+
     roots = question_roots()
     if not roots:
         lines.append("No questions yet.")
@@ -831,23 +884,34 @@ def cmd_index(a):
         for n in attention:
             why = (f"⚑ {n.flag}" if n.flag else "✎ edited" if n.changed else
                    f"✉ {n.human_note}" if n.human_note else "blocked" if n.status == "blocked" else "no question")
-            lines.append(f"- [{n.rel}]({n.rel}/DIRECTIVE.md) · `{n.status}` · {why}")
+            lines.append(f"- [{n.id}]({link(n)}) · `{n.status}` · {why}")
         lines.append("")
     for r in roots:
-        lines += [f"## [{r.path.name}]({r.rel}/DIRECTIVE.md) · `{status_tag(r)}`", "", r.question, ""]
+        lines += [f"## [{r.id}]({link(r)}) · `{status_tag(r)}`", "", r.question, ""]
         for n, d in r.walk():
             if d == 0:
                 continue
-            lines.append(f"{'  ' * (d - 1)}- [{n.path.name}]({n.rel}/DIRECTIVE.md) · "
-                         f"`{status_tag(n)}` · {n.question} ([findings]({n.rel}/FINDINGS.md))")
+            lines.append(f"{'  ' * (d - 1)}- [{n.path.name}]({link(n)}) · "
+                         f"`{status_tag(n)}` · {n.question} ([findings]({link(n, 'FINDINGS.md')}))")
         lines.append("")
-    (ROOT / "INDEX.md").write_text("\n".join(lines).rstrip() + "\n")
-    print("wrote INDEX.md")
+    index = LAB / "INDEX.md"
+    index.write_text("\n".join(lines).rstrip() + "\n")
+    print(f"wrote {rel(index)}")
+    commit([index], "[index] refresh", not a.no_commit)
 
 
 def cmd_check(a):
     errors, warnings = [], []
     allow_rewrite = os.environ.get("VM_ALLOW_REWRITE") == "1"
+
+    if a.repo and Path(a.repo).resolve() == ROOT:
+        # Pre-commit in the public scaffold: research must never be committed here.
+        staged = git("diff", "--cached", "--name-only", cwd=ROOT, check=False) or ""
+        leaks = [f for f in staged.splitlines() if f == "lab" or f.startswith("lab/")]
+        for f in leaks:
+            print(f"error: {f}: lab/ is private research; commit it in the lab repo "
+                  f"(git -C lab …), never in the public scaffold")
+        sys.exit(1 if leaks else 0)
 
     for r in question_roots():
         stack = [r.path]
@@ -861,23 +925,23 @@ def cmd_check(a):
             stack += [p for p in d.iterdir() if is_node_dir(p)]
             for f in NODE_FILES[1:]:
                 if not (d / f).exists():
-                    warnings.append(f"{n.rel}: missing {f}")
+                    warnings.append(f"{n.id}: missing {f}")
             if n.status not in STATUSES:
-                errors.append(f"{n.rel}: status {n.status!r} is not one of {', '.join(STATUSES)}")
+                errors.append(f"{n.id}: status {n.status!r} is not one of {', '.join(STATUSES)}")
             if not n.question:
-                warnings.append(f"{n.rel}: no question set")
+                warnings.append(f"{n.id}: no question set")
             if n.status == "active" and not n.fm.get("claimed_by"):
-                warnings.append(f"{n.rel}: active but claimed_by is empty")
+                warnings.append(f"{n.id}: active but claimed_by is empty")
             if n.is_stale():
-                warnings.append(f"{n.rel}: claim by {n.fm.get('claimed_by')} is stale "
+                warnings.append(f"{n.id}: claim by {n.fm.get('claimed_by')} is stale "
                                 f"({n.claim_age_hours():.0f}h)")
             if n.parent and f"{d.name}/DIRECTIVE.md" not in section(n.parent.text, "Sub-paths"):
-                warnings.append(f"{n.rel}: not listed in {n.parent.rel}/DIRECTIVE.md › Sub-paths")
+                warnings.append(f"{n.id}: not listed in {n.parent.id}/DIRECTIVE.md › Sub-paths")
 
     # History rules, checked against HEAD for files that already exist there.
     def current(path):
         return git_show(f":{path}") if a.staged else (
-            (ROOT / path).read_text() if (ROOT / path).exists() else None)
+            (LAB / path).read_text() if (LAB / path).exists() else None)
 
     tracked = git("ls-tree", "-r", "--name-only", "HEAD", "--", "questions", check=False) or ""
     for path in tracked.splitlines():
@@ -889,18 +953,18 @@ def cmd_check(a):
             continue
         if new is None:
             if name == "NOTEBOOK.md" and not allow_rewrite:
-                errors.append(f"{path}: notebook deleted (set VM_ALLOW_REWRITE=1 if intended)")
+                errors.append(f"lab/{path}: notebook deleted (set VM_ALLOW_REWRITE=1 if intended)")
             continue
         if name == "NOTEBOOK.md":
             if not split_fm(new)[1].rstrip().startswith(split_fm(old)[1].rstrip()) and not allow_rewrite:
-                errors.append(f"{path}: past entries were edited; notebooks are append-only "
+                errors.append(f"lab/{path}: past entries were edited; notebooks are append-only "
                               f"(add a correcting entry instead)")
         else:
             gone = set(bullets(section(old, "Restricted"))) - set(bullets(section(new, "Restricted")))
             for b in sorted(gone):
-                warnings.append(f"{path}: restriction removed or reworded: {b}")
+                warnings.append(f"lab/{path}: restriction removed or reworded: {b}")
             if question_of(old) != question_of(new):
-                warnings.append(f"{path}: Question changed (human decision only)")
+                warnings.append(f"lab/{path}: Question changed (human decision only)")
 
     for w in warnings:
         print(f"warning: {w}")
@@ -915,12 +979,6 @@ def cmd_check(a):
 # --------------------------------------------------------------------- main
 
 def main():
-    global ROOT, QUESTIONS
-    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
-    if top.returncode != 0:
-        die("not inside a git repository")
-    ROOT = Path(top.stdout.strip()).resolve()
-    QUESTIONS = ROOT / "questions"
 
     ap = argparse.ArgumentParser(prog="vm", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -932,7 +990,12 @@ def main():
         p.set_defaults(fn=fn)
         return p
 
-    add("init", cmd_init, "enable git hooks for this clone")
+    p = add("init", cmd_init, "create the private lab/ repo if missing and enable hooks (run once per clone)")
+    p.add_argument("--remote", help="URL of a PRIVATE remote for lab/")
+
+    p = add("commit", cmd_commit, "commit one node's changes to the lab repo")
+    p.add_argument("node")
+    p.add_argument("message", help='e.g. "log: first sweep"')
 
     p = add("question", cmd_question, "start a new question under questions/<slug>")
     p.add_argument("slug")
@@ -997,12 +1060,17 @@ def main():
     p.add_argument("node", nargs="?")
 
     add("questions", cmd_questions, "one line per question")
-    add("index", cmd_index, "regenerate INDEX.md (Obsidian landing page)")
+    p = add("index", cmd_index, "regenerate lab/INDEX.md and commit it")
+    p.add_argument("--no-commit", action="store_true")
 
     p = add("check", cmd_check, "lint structure and history rules")
     p.add_argument("--staged", action="store_true", help="check the index (used by the pre-commit hook)")
+    p.add_argument("--repo", help="repo the hook is running in (set by the pre-commit hook)")
 
     a = ap.parse_args()
+    scaffold_hook = a.cmd == "check" and a.repo and Path(a.repo).resolve() == ROOT
+    if a.cmd != "init" and not scaffold_hook and not (LAB / ".git").exists():
+        die("no lab yet — run: scripts/vm init")
     a.fn(a)
 
 

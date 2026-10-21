@@ -1,9 +1,9 @@
 filters:
   and:
-    - file.inFolder("questions")
+    - file.inFolder("lab/questions")
 formulas:
-  node: 'file.folder.replace("questions/", "")'
-  question_root: 'file.folder.split("/")[1]'
+  node: 'file.folder.replace("lab/questions/", "")'
+  question_root: 'file.folder.split("/")[2]'
   attention: 'if(flag, "⚑ " + flag, if(status == "blocked", "blocked: waiting on you", if(question, "", "no question set")))'
 properties:
   formula.node:

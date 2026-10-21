@@ -87,8 +87,10 @@ Keep going until one of these happens:
    ```bash
    scripts/vm release <node> <id> --status <open|blocked|concluded|abandoned> [--summary "..."]
    ```
-3. Commit your paths. Run `scripts/vm index` and commit `INDEX.md`
-   (`git commit -- INDEX.md`) so Obsidian's map stays current.
+3. `scripts/vm commit <node> "<verb>: <msg>"` for anything not yet
+   committed, then `scripts/vm index`, which refreshes and commits
+   `lab/INDEX.md`. All commits go to the private lab repo; never commit
+   research in the scaffold, and never push.
 4. Report to the user in a few lines: which node and why it was picked, what
    you did, what was found, the node's status now, and what `vm next` would
    pick next. Put anything that needs their decision first.

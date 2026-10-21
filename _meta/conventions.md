@@ -4,7 +4,7 @@
 
 `vm sync` (also run by `vm next`, hence `/go`) adopts:
 
-- **A note in `questions/` or in a node folder** (other than the three node
+- **A note in `lab/questions/` or in a node folder** (other than the three node
   files) → a new child node. Folder = slug of the note's name. Question = the
   `question` property, else the note's first paragraph, else its name. The
   remaining lead text becomes *Context*; `## In scope`, `## Restricted`,
@@ -50,7 +50,7 @@ edited since an agent last looked (its steering sections no longer match
 | Field | Value |
 |---|---|
 | `type` | `directive` |
-| `node` | Repo-relative path, e.g. `questions/cache-tuning/baseline`. Set by `vm`. |
+| `node` | Node name: path under `lab/questions/`, e.g. `cache-tuning/baseline`. Set by `vm`. |
 | `question` | The node's question, one sentence. Canonical; edit it here. |
 | `status` | See above |
 | `claimed_by` | Agent id, or empty |
@@ -104,6 +104,7 @@ large raw output in `raw/` (git-ignored).
 
 ## Commits
 
-`[<node path>] <verb>: <message>`, e.g.
-`[questions/cache-tuning/baseline] log: first sweep`. Verbs: `question`, `path`,
-`claim`, `release`, `log`, `run`, `findings`, `directive`.
+All in the lab repo: `[<node>] <verb>: <message>`, e.g.
+`[cache-tuning/baseline] log: first sweep` (what `vm commit` writes). Verbs: `question`, `path`,
+`claim`, `release`, `log`, `run`, `findings`, `directive`, plus `[sync]` and
+`[index]` from `vm`.

@@ -6,9 +6,9 @@ APIs, eval harnesses, anything that produces evidence.
 Register each one in its own folder:
 
 ```
-instruments/
+lab/instruments/
 └── <name>/
-    ├── INSTRUMENT.md     how to invoke it, costs, outputs, pitfalls (from _meta/templates/INSTRUMENT.md)
+    ├── INSTRUMENT.md     how to invoke it, costs, outputs, pitfalls (from the scaffold's _meta/templates/INSTRUMENT.md)
     └── …                 wrapper scripts or config, if any
 ```
 

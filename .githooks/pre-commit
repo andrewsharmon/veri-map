@@ -1,3 +1,5 @@
 #!/bin/sh
-# Enforces veri-map history rules (append-only notebooks). Enabled by `scripts/vm init`.
-exec python3 "$(git rev-parse --show-toplevel)/scripts/vm" check --staged
+# Installed by `scripts/vm init` in both repos:
+# - public scaffold: refuses any commit that includes lab/ (private research)
+# - private lab: enforces append-only notebooks
+exec python3 "$(dirname "$0")/../scripts/vm" check --staged --repo "$(git rev-parse --show-toplevel)"

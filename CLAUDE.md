@@ -1,9 +1,11 @@
 # Agent protocol
 
-You are working in a veri-map research repository. Each folder directly under
-`questions/` is one research **question**; every folder inside a question is a
-**node** (a research path) with a `DIRECTIVE.md`, `NOTEBOOK.md` and
-`FINDINGS.md`. Read [README.md](README.md) for the model and
+You are working in a veri-map research workspace. Research lives in `lab/`,
+a **private git repo** nested inside the public scaffold. Each folder directly
+under `lab/questions/` is one research **question**; every folder inside a
+question is a **node** (a research path) with a `DIRECTIVE.md`, `NOTEBOOK.md`
+and `FINDINGS.md`. A node's name is its path under `lab/questions/`, e.g.
+`cache-tuning/baseline`; `vm` commands take that name. Read [README.md](README.md) for the model and
 [_meta/conventions.md](_meta/conventions.md) for field formats.
 
 Tooling: `scripts/vm` (Python 3 stdlib, no install). Run `scripts/vm -h`.
@@ -11,11 +13,14 @@ Tooling: `scripts/vm` (Python 3 stdlib, no install). Run `scripts/vm -h`.
 ## Scope
 
 - You are assigned a question, and usually a node within it. If you were not
-  given a node, run `scripts/vm next [questions/<slug>]` and take the
+  given a node, run `scripts/vm next [<question>]` and take the
   `PICK UP:` node (the `/go` skill does exactly this).
 - **Never touch another question's folder.** Questions are independent.
-- Outside `questions/`, change nothing (templates, scripts, this file,
+- Outside `lab/`, change nothing (templates, scripts, this file,
   `.obsidian/`) unless a human asks you to.
+- **Never commit research to the scaffold repo**, and never copy anything
+  from `lab/` into scaffold files. The scaffold is public; the lab is private.
+  `vm` commits go to the lab repo; use them instead of raw `git`.
 
 ## Before you work on a node
 
@@ -51,12 +56,13 @@ Tooling: `scripts/vm` (Python 3 stdlib, no install). Run `scripts/vm -h`.
   creates `runs/<YYYYMMDD-HHMM>-<slug>/run.md`. Fill in the exact command,
   instrument version and parameters. Put large raw output in that run's `raw/`
   folder (git-ignored); commit summaries, not gigabytes. Check
-  `instruments/<name>/INSTRUMENT.md` for costs and limits first.
+  `lab/instruments/<name>/INSTRUMENT.md` for costs and limits first.
 - **Respect budgets.** If any directive in the chain sets a *Budget*, stop when
   you reach it and log that you did.
-- **Commit only your paths:** `git add <node> && git commit -m "[<node>] <verb>: <msg>" -- <node>`.
-  Other agents may share this checkout; never `git add -A` or commit their
-  files. Commit after every few entries.
+- **Commit only your node:** `scripts/vm commit <node> "<verb>: <msg>"`
+  (it commits that node's folder in the lab repo). Other agents may share this
+  checkout; never `git add -A` or commit their files. Commit after every few
+  entries.
 
 ## Nodes the human made
 
@@ -109,5 +115,6 @@ then release with `--status open`.
   above).
 - Redo work recorded under *Closed paths* or *Negative results* unless a
   directive tells you to.
-- Push, force-push, rewrite history, or bypass hooks (`--no-verify`) unless a
-  human asks.
+- Push either repo, force-push, rewrite history, or bypass hooks
+  (`--no-verify`) unless a human asks. Never add a remote to `lab/` or push it
+  anywhere a human hasn't named.

@@ -1,14 +1,38 @@
 {
-  "search": "path:questions",
+  "search": "path:lab/questions",
   "showTags": false,
   "showAttachments": false,
   "hideUnresolved": true,
   "showOrphans": false,
   "showArrow": true,
   "colorGroups": [
-    { "query": "file:DIRECTIVE", "color": { "a": 1, "rgb": 14701138 } },
-    { "query": "file:NOTEBOOK", "color": { "a": 1, "rgb": 4886745 } },
-    { "query": "file:FINDINGS", "color": { "a": 1, "rgb": 5025616 } },
-    { "query": "file:run", "color": { "a": 1, "rgb": 10395294 } }
+    {
+      "query": "file:DIRECTIVE",
+      "color": {
+        "a": 1,
+        "rgb": 14701138
+      }
+    },
+    {
+      "query": "file:NOTEBOOK",
+      "color": {
+        "a": 1,
+        "rgb": 4886745
+      }
+    },
+    {
+      "query": "file:FINDINGS",
+      "color": {
+        "a": 1,
+        "rgb": 5025616
+      }
+    },
+    {
+      "query": "file:run",
+      "color": {
+        "a": 1,
+        "rgb": 10395294
+      }
+    }
   ]
 }

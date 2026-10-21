@@ -7,5 +7,5 @@ __pycache__/
 .obsidian/cache
 .trash/
 
-# Large instrument output; commit run.md and summaries instead
-questions/**/runs/**/raw/
+# Private research: lab/ is its own git repo (created by `scripts/vm init`)
+/lab/
