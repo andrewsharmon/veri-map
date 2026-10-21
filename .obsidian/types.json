@@ -1,0 +1,23 @@
+{
+  "types": {
+    "type": "text",
+    "node": "text",
+    "question": "text",
+    "status": "text",
+    "flag": "text",
+    "claimed_by": "text",
+    "claimed_at": "text",
+    "seen": "text",
+    "created": "date",
+    "updated": "date",
+    "confidence": "text",
+    "run": "text",
+    "agent": "text",
+    "instrument": "text",
+    "instrument_version": "text",
+    "commit": "text",
+    "started": "text",
+    "outcome": "text",
+    "tags": "tags"
+  }
+}

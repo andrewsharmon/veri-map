@@ -1,5 +1,5 @@
 
-## {{date:YYYY-MM-DD}} {{time:HH:mm}} · {{agent}} · {{entry}}
+## {{date:YYYY-MM-DD}} {{time:HH:mm}} · human · Title
 
 **Intent:** 
 

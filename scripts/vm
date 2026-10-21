@@ -147,7 +147,18 @@ def bullets(s):
 
 
 def question_of(text):
-    return " ".join(clean(section(text, "Question")).split())
+    """The `question` property; older directives kept it in a ## Question section."""
+    q = parse_fm(text).get("question", "") or clean(section(text, "Question"))
+    return " ".join(q.split())
+
+
+def yaml_str(s):
+    return '"%s"' % " ".join(s.split()).replace('"', "'")
+
+
+def slugify(name):
+    s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return s[:48].rstrip("-") or "untitled"
 
 
 def append_to_section(text, name, line, table=False):
@@ -177,6 +188,12 @@ def entry_field(entry, name):
     return m.group(1).strip() if m else ""
 
 
+def entry_heading(entry):
+    """(author, title) from '## <date> <time> · <author> · <title>'."""
+    parts = entry.splitlines()[0][3:].split(" · ", 2)
+    return (parts[1].strip(), parts[2].strip()) if len(parts) == 3 else ("", "")
+
+
 def digest(directive_text):
     """Fingerprint of the parts of a directive that steer work.
 
@@ -189,7 +206,8 @@ def digest(directive_text):
         span = section_span(body, name)
         if span:
             body = body[:span[0]] + body[span[1]:]
-    return hashlib.sha1(" ".join(strip_comments(body).split()).encode()).hexdigest()[:10]
+    steering = question_of(directive_text) + "\n" + " ".join(strip_comments(body).split())
+    return hashlib.sha1(steering.encode()).hexdigest()[:10]
 
 
 # -------------------------------------------------------------------- nodes
@@ -228,6 +246,15 @@ class Node:
         """True if a human edited the directive since an agent last claimed or released it."""
         seen = self.fm.get("seen", "")
         return bool(seen) and seen != digest(self.text)
+
+    @property
+    def human_note(self):
+        """Title of the last notebook entry if a human wrote it (no agent has replied yet)."""
+        ents = entries(self.read("NOTEBOOK.md"))
+        if not ents:
+            return ""
+        author, title = entry_heading(ents[-1])
+        return title if author == "human" else ""
 
     def held_by_other(self, agent=None):
         holder = self.fm.get("claimed_by", "")
@@ -293,24 +320,173 @@ def resolve_node(arg):
     die(f"not a node: {arg} (expected a folder under questions/ with a DIRECTIVE.md)")
 
 
-def write_node(path, question):
+PARENT_LINK = "Parent: [../DIRECTIVE.md](../DIRECTIVE.md)"
+ROOT_LINK = "Parent: [INDEX.md](../../INDEX.md)"
+
+
+def write_node(path, question=None, sections=None):
+    """Create any missing node files from the templates and stamp their `node` property.
+
+    Safe to re-run: existing files keep their content. `question` and `sections`
+    ({"In scope": "- …"}) only apply to a newly created DIRECTIVE.md.
+    Returns True if anything changed.
+    """
     path.mkdir(parents=True, exist_ok=True)
-    root = path.parent == QUESTIONS
-    up = "../" * (len(path.relative_to(ROOT).parts))
-    parent_link = f"[INDEX.md]({up}INDEX.md)" if root else "[../DIRECTIVE.md](../DIRECTIVE.md)"
+    node, changed = rel(path), False
     for name in NODE_FILES:
-        (path / name).write_text(render(name, node=rel(path), question=question, parent_link=parent_link))
+        f = path / name
+        new = not f.exists()
+        text = render(name) if new else f.read_text()
+        if name == "DIRECTIVE.md":
+            if new:
+                for sec, content in (sections or {}).items():
+                    text = append_to_section(text, sec, content)
+            if path.parent == QUESTIONS:
+                text = text.replace(PARENT_LINK, ROOT_LINK, 1)
+        if new or text != f.read_text():
+            f.write_text(text)
+            changed = True
+        fields = {}
+        if parse_fm(text).get("node") != node:
+            fields["node"] = node
+        if new and name == "DIRECTIVE.md" and question:
+            fields["question"] = yaml_str(question)
+        if fields:
+            set_fm(f, **fields)
+            changed = True
+    return changed
 
 
 def append_entry(node, agent, title, body=None):
     nb = node.path / "NOTEBOOK.md"
     text = nb.read_text() if nb.exists() else ""
-    entry = render("entry.md", agent=agent, entry=title)
-    if body is not None:
-        heading = entry.strip().splitlines()[0]
-        entry = f"\n{heading}\n\n{body.strip()}\n"
-    nb.write_text(text.rstrip("\n") + "\n" + entry)
-    return entry.strip().splitlines()[0]
+    heading = f"## {NOW.strftime('%Y-%m-%d %H:%M')} · {agent} · {title}"
+    if body is None:
+        skeleton = render("entry.md").strip("\n").split("\n")[1:]  # template minus its heading
+        entry = "\n".join([heading] + skeleton)
+    else:
+        entry = f"{heading}\n\n{body.strip()}"
+    nb.write_text(text.rstrip("\n") + "\n\n" + entry.rstrip() + "\n")
+    return heading
+
+
+# ------------------------------------------------- adopting human-made nodes
+
+def is_tracked(path):
+    return git("ls-files", "--error-unmatch", "--", rel(path), check=False) is not None
+
+
+def parse_note(path):
+    """A note a human wrote in Obsidian -> (question, {section: content}).
+
+    The question is the `question` property, else the first paragraph, else the
+    note's name. Text before the first heading becomes Context; ## In scope,
+    ## Restricted, ## Done when, ## Budget and ## Context carry over as-is.
+    """
+    text = path.read_text()
+    _, body = split_fm(text)
+    body = strip_comments(body)
+    sections = {}
+    for name in ("Context", "In scope", "Restricted", "Done when", "Budget"):
+        s = section(body, name).strip()
+        if s:
+            sections[name] = s
+    lead = re.split(r"^## ", body, maxsplit=1, flags=re.M)[0]
+    lead = "\n".join(l for l in lead.splitlines() if not l.startswith("# ")).strip()
+    question = parse_fm(text).get("question", "")
+    if not question and lead:
+        first, _, lead = lead.partition("\n\n")
+        question, lead = " ".join(first.split()), lead.strip()
+    if lead:
+        sections["Context"] = lead + ("\n\n" + sections["Context"] if "Context" in sections else "")
+    return question or path.stem, sections
+
+
+def loose_notes(d):
+    """Markdown files in a folder that are requests for new nodes."""
+    skip = set(NODE_FILES) | {"README.md", "INDEX.md"}
+    return [f for f in sorted(d.glob("*.md"))
+            if f.name not in skip and not f.name.startswith(("_", ".", "Untitled"))]
+
+
+def sync():
+    """Turn what a human made in Obsidian into proper nodes.
+
+    - A note inside questions/ or a node folder becomes a new child node named
+      after the note (the note is folded into the new DIRECTIVE.md).
+    - A folder gets a slug name, any missing node files, and a row in its
+      parent's Sub-paths. A folder with no DIRECTIVE.md and one note uses that
+      note as its directive.
+    Returns (log lines, touched paths).
+    """
+    log, touched = [], []
+
+    def consume(note):
+        touched.extend([note] if is_tracked(note) else [])
+        note.unlink()
+
+    queue = [QUESTIONS] if QUESTIONS.exists() else []
+    while queue:
+        d = queue.pop(0)
+        for note in loose_notes(d):
+            child = d / slugify(note.stem)
+            if child.exists():
+                log.append(f"skipped {rel(note)}: {rel(child)} already exists")
+                continue
+            question, sections = parse_note(note)
+            write_node(child, question, sections)
+            consume(note)
+            touched.append(child)
+            log.append(f"created {rel(child)}/ from note '{note.name}'")
+
+        for c in sorted(p for p in d.iterdir() if is_node_dir(p)):
+            before = len(log)
+            if not SLUG_RE.match(c.name):
+                new = d / slugify(c.name)
+                if new.exists():
+                    log.append(f"skipped folder {rel(c)}: {rel(new)} already exists")
+                    continue
+                if is_tracked(c):
+                    touched.append(c)
+                c.rename(new)
+                log.append(f"renamed {rel(c)} -> {rel(new)}")
+                c = new
+            directive = c / "DIRECTIVE.md"
+            if directive.exists() and parse_fm(directive.read_text()).get("type") != "directive":
+                # A note named DIRECTIVE without the template: treat its text as the request.
+                question, sections = parse_note(directive)
+                directive.unlink()
+                write_node(c, question if question != "DIRECTIVE" else c.name.replace("-", " "), sections)
+                log.append(f"rebuilt {rel(directive)} from the template")
+            elif not directive.exists():
+                notes = loose_notes(c)
+                if not notes and not any(c.iterdir()):
+                    continue  # empty folder, still being set up
+                if len(notes) == 1:
+                    question, sections = parse_note(notes[0])
+                    consume(notes[0])
+                else:
+                    question, sections = c.name.replace("-", " "), None
+                write_node(c, question, sections)
+                log.append(f"created node {rel(c)}/")
+            elif write_node(c):
+                log.append(f"completed node files in {rel(c)}/")
+
+            if d != QUESTIONS:
+                parent = Node(d)
+                if f"{c.name}/DIRECTIVE.md" not in section(parent.text, "Sub-paths"):
+                    q = Node(c).question.replace("|", "\\|")
+                    parent.directive.write_text(append_to_section(
+                        parent.text, "Sub-paths", f"| [{c.name}]({c.name}/DIRECTIVE.md) | {q} |", table=True))
+                    append_entry(parent, "vm", f"Added sub-path `{c.name}` (created in Obsidian)",
+                                 f"[{c.name}/DIRECTIVE.md]({c.name}/DIRECTIVE.md): {Node(c).question}")
+                    touched.append(d / "DIRECTIVE.md")
+                    touched.append(d / "NOTEBOOK.md")
+                    log.append(f"listed {c.name} in {rel(d)}/DIRECTIVE.md › Sub-paths")
+            if len(log) > before:
+                touched.append(c)
+            queue.append(c)
+    return log, touched
 
 
 def status_tag(n):
@@ -321,6 +497,8 @@ def status_tag(n):
         s += " ⚑"
     if n.changed:
         s += " ✎"
+    if n.human_note:
+        s += " ✉"
     return s
 
 
@@ -376,10 +554,12 @@ def cmd_context(a):
     anc = node.ancestors()
     out = [f"# Context · {node.rel}", "", f"Generated {NOW.strftime('%Y-%m-%d %H:%M')}. Sections below are root-first.", ""]
 
-    if node.flag or node.changed:
+    if node.flag or node.changed or node.human_note:
         out += ["# From the human (act on this first)", ""]
         if node.flag:
             out.append(f"- Flag on this node: {node.flag}")
+        if node.human_note:
+            out.append(f"- The last notebook entry is a note from the human: \"{node.human_note}\" (shown below)")
         if node.changed:
             out.append(f"- The directive changed since an agent last read it. See what changed with: "
                        f"git diff -- {node.rel}/DIRECTIVE.md; git log -p -3 -- {node.rel}/DIRECTIVE.md")
@@ -420,7 +600,8 @@ def cmd_context(a):
             out += ["", "Parent's closed paths:", closed]
         out.append("")
 
-    out += [f"# This node's directive (status: {status_tag(node)})", "", embed(node.text), ""]
+    out += [f"# This node's directive (status: {status_tag(node)})", "",
+            f"**Question:** {node.question or '(not set — ask the human)'}", "", embed(node.text), ""]
     out += ["# This node's findings", "", embed(node.read("FINDINGS.md")) or "(empty)", ""]
 
     ents = entries(node.read("NOTEBOOK.md"))
@@ -452,6 +633,8 @@ def cmd_claim(a):
     if node.changed:
         notes.append(f"Directive changed since the last agent visit; review "
                      f"`git log -p -- {node.rel}/DIRECTIVE.md`.")
+    if node.human_note:
+        notes.append(f"Human note in this notebook: \"{node.human_note}\" (previous entry).")
     if notes:
         append_entry(node, a.agent, "Picked up human steering", "\n\n".join(notes))
         paths.append(node.path / "NOTEBOOK.md")
@@ -513,13 +696,18 @@ def candidates(roots, agent=None):
                 picks.append((100, depth, n, f"flagged: {n.flag}{note}"))
             elif n.changed and n.status == "blocked":
                 picks.append((90, depth, n, "blocked, and the directive has since been updated"))
+            elif not n.question:
+                waiting.append((n, "needs a question"))
+                continue
+            elif n.human_note and not closed:
+                picks.append((85, depth, n, f"human note in notebook: {n.human_note}"))
             elif n.changed and not closed:
                 picks.append((80, depth, n, "directive updated since the last agent visit"))
             elif n.is_stale():
                 picks.append((60, depth, n, f"stale claim by {n.fm.get('claimed_by')}; resume"
                               + (f" — next: {nxt}" if nxt else "")))
             elif n.status == "blocked":
-                waiting.append(n)
+                waiting.append((n, "blocked"))
             elif n.status == "open":
                 open_kids = [k for k in kids if k.status not in CLOSED]
                 if kids and not open_kids:
@@ -536,10 +724,23 @@ def candidates(roots, agent=None):
     return [(s, n, why) for s, _, n, why in picks], waiting
 
 
+def cmd_sync(a):
+    log, touched = sync()
+    print("\n".join(log) if log else "nothing to sync")
+    if log:
+        commit(touched, "[questions] sync: adopt nodes created in Obsidian", not a.no_commit)
+
+
 def cmd_next(a):
+    if not a.no_sync:
+        log, touched = sync()
+        if log:
+            print("synced from Obsidian:\n" + "\n".join(f"  {l}" for l in log) + "\n")
+            commit(touched, "[questions] sync: adopt nodes created in Obsidian", not a.no_commit)
+            print()
     roots = [resolve_node(a.node)] if a.node else question_roots()
     if not roots:
-        print("no questions yet — start one with: scripts/vm question <slug> \"<question>\"")
+        print("no questions yet — in Obsidian, add a note to questions/ (see README)")
         return
     picks, waiting = candidates(roots, a.agent)
     if picks:
@@ -549,9 +750,9 @@ def cmd_next(a):
     else:
         print("NOTHING TO PICK UP: every node is closed, claimed, or waiting on a human.")
     if waiting:
-        print("\nWaiting on a human (blocked):")
-        for n in waiting:
-            print(f"- {n.rel}  {short(n.question, 90)}")
+        print("\nWaiting on a human:")
+        for n, why in waiting:
+            print(f"- {n.rel}  [{why}]  {short(n.question, 80)}")
 
 
 def cmd_log(a):
@@ -571,9 +772,9 @@ def cmd_run(a):
     sha = git("rev-parse", "--short", "HEAD", check=False) or "none"
     if git("status", "--porcelain", check=False):
         sha += "-dirty"
-    (path / "run.md").write_text(render(
-        "run.md", node=node.rel, run=run_id, agent=a.agent,
-        instrument=a.instrument or "", commit=sha))
+    run_md = path / "run.md"
+    run_md.write_text(render("run.md"))
+    set_fm(run_md, node=node.rel, run=run_id, agent=a.agent, instrument=a.instrument, commit=sha)
     print(rel(path / "run.md"))
 
 
@@ -616,17 +817,20 @@ def cmd_index(a):
     lines = [
         "# Index", "",
         f"Generated by `scripts/vm index` on {NOW.strftime('%Y-%m-%d')}. Do not edit by hand.",
-        "Live tables: [_meta/dashboard.md](_meta/dashboard.md) (Dataview).", "",
+        "Live, editable tables: [Research.base](Research.base).", "",
     ]
     roots = question_roots()
     if not roots:
         lines.append("No questions yet.")
-    attention = [n for r in roots for n, _ in r.walk() if n.flag or n.changed or n.status == "blocked"]
+    attention = [n for r in roots for n, _ in r.walk()
+                 if n.flag or n.changed or n.human_note or n.status == "blocked" or not n.question]
     if attention:
         lines += ["## Needs attention", "",
-                  "⚑ flagged · ✎ directive edited since an agent last looked · blocked = waiting on you", ""]
+                  "⚑ flagged · ✎ directive edited since an agent last looked · "
+                  "✉ your note awaits an agent · blocked / no question = waiting on you", ""]
         for n in attention:
-            why = f"⚑ {n.flag}" if n.flag else ("✎ edited" if n.changed else "blocked")
+            why = (f"⚑ {n.flag}" if n.flag else "✎ edited" if n.changed else
+                   f"✉ {n.human_note}" if n.human_note else "blocked" if n.status == "blocked" else "no question")
             lines.append(f"- [{n.rel}]({n.rel}/DIRECTIVE.md) · `{n.status}` · {why}")
         lines.append("")
     for r in roots:
@@ -660,6 +864,8 @@ def cmd_check(a):
                     warnings.append(f"{n.rel}: missing {f}")
             if n.status not in STATUSES:
                 errors.append(f"{n.rel}: status {n.status!r} is not one of {', '.join(STATUSES)}")
+            if not n.question:
+                warnings.append(f"{n.rel}: no question set")
             if n.status == "active" and not n.fm.get("claimed_by"):
                 warnings.append(f"{n.rel}: active but claimed_by is empty")
             if n.is_stale():
@@ -762,6 +968,11 @@ def main():
     p.add_argument("node", nargs="?", help="limit to a question or subtree")
     p.add_argument("--agent", help="your id, so your own claims are not skipped")
     p.add_argument("--limit", type=int, default=5)
+    p.add_argument("--no-sync", action="store_true", help="skip adopting Obsidian-made notes first")
+    p.add_argument("--no-commit", action="store_true", help="sync without committing")
+
+    p = add("sync", cmd_sync, "adopt notes and folders created in Obsidian as proper nodes")
+    p.add_argument("--no-commit", action="store_true")
 
     p = add("flag", cmd_flag, "flag a node for agent attention (same as setting `flag:` in Obsidian)")
     p.add_argument("node")

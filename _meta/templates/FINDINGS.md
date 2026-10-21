@@ -1,17 +1,14 @@
 ---
 type: findings
-node: {{node}}
+node:
 confidence: none
 updated: {{date:YYYY-MM-DD}}
-aliases: ["{{node}} findings"]
 tags: [vm/findings]
 ---
-# Findings · {{node}}
-
 [DIRECTIVE.md](DIRECTIVE.md) · [NOTEBOOK.md](NOTEBOOK.md)
 
 ## Answer so far
-<!-- 1–3 sentences answering the directive's Question. "Unknown yet" is valid.
+<!-- 1–3 sentences answering the directive's question. "Unknown yet" is valid.
      Set `confidence` above to none | low | medium | high. -->
 
 ## Supported claims

@@ -1,17 +1,15 @@
 ---
 type: run
-node: {{node}}
-run: {{run}}
-agent: {{agent}}
-instrument: {{instrument}}
+node:
+run:
+agent:
+instrument:
 instrument_version:
-commit: {{commit}}
+commit:
 started: {{date:YYYY-MM-DD}} {{time:HH:mm}}
 outcome:
 tags: [vm/run]
 ---
-# Run · {{run}}
-
 Node: [DIRECTIVE.md](../../DIRECTIVE.md) · [NOTEBOOK.md](../../NOTEBOOK.md)
 
 ## Purpose

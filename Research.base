@@ -1,0 +1,83 @@
+filters:
+  and:
+    - file.inFolder("questions")
+formulas:
+  node: 'file.folder.replace("questions/", "")'
+  question_root: 'file.folder.split("/")[1]'
+  attention: 'if(flag, "⚑ " + flag, if(status == "blocked", "blocked: waiting on you", if(question, "", "no question set")))'
+properties:
+  formula.node:
+    displayName: Node
+  formula.question_root:
+    displayName: Question
+  formula.attention:
+    displayName: Needs
+  question:
+    displayName: Question asked
+  flag:
+    displayName: Flag (for /go)
+  status:
+    displayName: Status
+  claimed_by:
+    displayName: Agent
+  confidence:
+    displayName: Confidence
+views:
+  - type: table
+    name: Needs attention
+    filters:
+      and:
+        - 'type == "directive"'
+        - 'formula.attention != ""'
+    order:
+      - formula.node
+      - formula.attention
+      - status
+      - question
+      - flag
+  - type: table
+    name: All nodes
+    filters:
+      and:
+        - 'type == "directive"'
+    groupBy:
+      property: formula.question_root
+      direction: ASC
+    order:
+      - formula.node
+      - status
+      - flag
+      - question
+      - claimed_by
+      - updated
+  - type: table
+    name: Active
+    filters:
+      and:
+        - 'type == "directive"'
+        - 'status == "active"'
+    order:
+      - formula.node
+      - claimed_by
+      - claimed_at
+      - question
+  - type: table
+    name: Findings
+    filters:
+      and:
+        - 'type == "findings"'
+    order:
+      - formula.node
+      - confidence
+      - updated
+  - type: table
+    name: Runs
+    filters:
+      and:
+        - 'type == "run"'
+    order:
+      - formula.node
+      - instrument
+      - agent
+      - outcome
+      - started

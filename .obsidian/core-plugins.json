@@ -13,5 +13,6 @@
   "bookmarks": true,
   "file-recovery": true,
   "daily-notes": false,
-  "canvas": true
+  "canvas": true,
+  "bases": true
 }

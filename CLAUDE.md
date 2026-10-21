@@ -29,8 +29,9 @@ Tooling: `scripts/vm` (Python 3 stdlib, no install). Run `scripts/vm -h`.
 3. If the node is `active` and claimed by someone else, pick another node.
    (`vm claim` refuses unless the claim is stale, over 24h old.)
 4. If `context` shows a **From the human** section, act on it first: the
-   `flag` is your instruction for this session, and a changed directive means
-   read its diff before anything else.
+   `flag` is your instruction for this session, a notebook entry by `human`
+   is a note addressed to you, and a changed directive means read its diff
+   before anything else.
 5. `scripts/vm claim <node> <your-id>`. It logs any flag or directive change
    in the notebook, stamps `seen`, and commits.
 
@@ -56,6 +57,14 @@ Tooling: `scripts/vm` (Python 3 stdlib, no install). Run `scripts/vm -h`.
 - **Commit only your paths:** `git add <node> && git commit -m "[<node>] <verb>: <msg>" -- <node>`.
   Other agents may share this checkout; never `git add -A` or commit their
   files. Commit after every few entries.
+
+## Nodes the human made
+
+The human works only in Obsidian. A note they drop into a node folder is a
+request for a new sub-path; `scripts/vm sync` (run automatically by
+`vm next`) turns it into a proper node and lists it in the parent. Treat such
+nodes like any other, but if one overlaps a sibling, raise it in the parent's
+notebook rather than silently merging them.
 
 ## Spawning a sub-path
 
@@ -89,9 +98,10 @@ then release with `--status open`.
 
 ## What you must not do
 
-- Set a `flag` or edit the `seen` field by hand. Flags are how humans steer;
+- Write notebook entries as `human` (that author is reserved for the
+  human), set a `flag`, or edit the `seen` field by hand. Flags are how humans steer;
   `seen` is maintained by `vm claim` / `vm release`.
-- Loosen, delete or reword a restriction, or change a directive's *Question*.
+- Loosen, delete or reword a restriction, or change a directive's `question`.
   Those are human decisions. Propose a change in the notebook with a
   `**Proposal:**` line, and release with `--status blocked` if you cannot
   continue without it.

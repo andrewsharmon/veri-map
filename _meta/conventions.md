@@ -1,5 +1,22 @@
 # Conventions
 
+## Notes made in Obsidian
+
+`vm sync` (also run by `vm next`, hence `/go`) adopts:
+
+- **A note in `questions/` or in a node folder** (other than the three node
+  files) → a new child node. Folder = slug of the note's name. Question = the
+  `question` property, else the note's first paragraph, else its name. The
+  remaining lead text becomes *Context*; `## In scope`, `## Restricted`,
+  `## Done when`, `## Budget`, `## Context` sections carry over. The note is
+  deleted once folded into the new `DIRECTIVE.md`.
+- **A folder** → renamed to a slug if needed. Missing node files are created,
+  and the folder is listed in its parent's *Sub-paths*. A folder with no
+  `DIRECTIVE.md` and exactly one note uses that note as its directive.
+
+Notes named `Untitled…` or starting with `_` are left alone. Put notes that
+are not requests in `assets/` or a `_`-prefixed folder.
+
 ## Names
 
 - Question and node folders: lowercase kebab-case slugs (`cold-start`,
@@ -33,7 +50,8 @@ edited since an agent last looked (its steering sections no longer match
 | Field | Value |
 |---|---|
 | `type` | `directive` |
-| `node` | Repo-relative path, e.g. `questions/cache-tuning/baseline` |
+| `node` | Repo-relative path, e.g. `questions/cache-tuning/baseline`. Set by `vm`. |
+| `question` | The node's question, one sentence. Canonical; edit it here. |
 | `status` | See above |
 | `claimed_by` | Agent id, or empty |
 | `claimed_at` | `YYYY-MM-DDTHH:MM` local time, or empty |
@@ -55,8 +73,8 @@ Keep frontmatter values on one line; `scripts/vm` reads `key: value` lines only.
 
 ## Directive sections
 
-`Question`, `Context`, `In scope`, `Restricted`, `Done when`, `Budget`,
-`Sub-paths`, `Closed paths`. `scripts/vm` finds them by their `## ` heading, so
+`Context`, `In scope`, `Restricted`, `Done when`, `Budget`, `Sub-paths`,
+`Closed paths` (the question is the `question` property). `scripts/vm` finds them by their `## ` heading, so
 keep the names. Guidance lives in `<!-- -->` comments, which Obsidian hides in
 reading view.
 
@@ -73,7 +91,9 @@ Restrictions are bullets with an id and a reason:
 ## 2026-10-20 14:32 · agent-a · First sweep
 ```
 
-Heading = date, time, agent, title. Body fields: *Intent*, *Did*, *Observed*,
+Heading = date, time, author, title. The author `human` is reserved for the
+person steering from Obsidian (the *entry* template uses it); an agent never
+writes as `human`. Body fields: *Intent*, *Did*, *Observed*,
 *Interpretation*, *Next*, *Refs*. Refer to an entry by its heading text. Use a
 `**Proposal:**` line to ask a human to change a directive.
 

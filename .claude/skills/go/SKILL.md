@@ -21,16 +21,19 @@ keep it for the whole session.
 scripts/vm next $ARGUMENTS --agent <id>
 ```
 
-It ranks candidates, highest first:
+It first syncs what the human made in Obsidian, turning new notes and folders
+into proper nodes, and commits that. Then it ranks candidates, highest first:
 
 1. **flagged** – a human set `flag:` on the node (in Obsidian, or with `vm flag`).
    The flag text is your instruction for this session.
 2. **blocked, directive updated** – a human probably answered a `**Proposal:**`.
-3. **directive updated** – a human changed the scope, restrictions, exit
-   criteria or budget since an agent last claimed or released the node.
-4. **stale claim** – an agent stopped mid-work over 24h ago; resume it.
-5. **all sub-paths closed** – write up the parent's findings from its children.
-6. **in progress / not started / plan sub-paths** – ordinary open work, deepest
+3. **human note** – the last notebook entry was written by `human`; it is
+   addressed to you.
+4. **directive updated** – a human changed the question, scope, restrictions,
+   exit criteria or budget since an agent last claimed or released the node.
+5. **stale claim** – an agent stopped mid-work over 24h ago; resume it.
+6. **all sub-paths closed** – write up the parent's findings from its children.
+7. **in progress / not started / plan sub-paths** – ordinary open work, deepest
    first.
 
 Take the `PICK UP:` node. Choose a lower one only if the top one is outside
@@ -46,7 +49,7 @@ scripts/vm context <node>
 
 Read all of it. If it has a **From the human** section, deal with that first:
 
-- A flag is the instruction for this session. If it's about a different node,
+- A flag, or a notebook entry by `human`, is the instruction for this session. If it's about a different node,
   e.g. a flag on a question root naming a sub-path, work that node instead and
   mention the redirect in both notebooks.
 - If the directive changed, read the diff it points to (`git diff` /
